@@ -1,0 +1,433 @@
+"""Dirty-data rules DSL and validation engine.
+
+Rules are declared in YAML or JSON with this shape::
+
+    version: 1
+    topic: payments                       # topic glob (default '*')
+    rules:
+      - name: "payments-constraints"
+        fields:
+          payment_id:
+            type: string
+            required: true
+            pattern: "^pay_"
+          amount_cents:
+            type: integer
+            required: true
+            range: {minimum: 0, maximum: 100000000}
+          currency:
+            type: string
+            pattern: "^[A-Z]{3}$"
+          status:
+            type: string
+            enum: [ACCEPTED, PENDING, REJECTED]
+          fee_cents:
+            type: integer
+            non_null: true
+            range: {minimum: 0}
+
+Supported field checks:
+
+- ``type``  — one of ``string|integer|number|boolean|array|object|record``
+  (record == object). Integers satisfy ``number``.
+- ``required`` — bool; if true the key must be present (missing counts as a
+  violation).
+- ``enum``  — list of allowed scalar values.
+- ``pattern`` — regex the string value must match.
+- ``range``  — ``{minimum, maximum}`` numeric bounds (inclusive).
+- ``non_null`` — bool; if true the value may not be ``None``/JSON null.
+
+A message is reported per (offset, key, failed rule). The engine iterates all
+messages in the topic; each message applies to a rule by topic match. Missing
+topic-level rule configuration (``rules: []``) is allowed and yields zero
+violations.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Iterator, Optional
+
+import yaml
+
+from .rules_errors import (
+    RulesConfigError,
+    RuleFieldConfigError,
+    UnknownFieldTypeError,
+)
+
+
+# ---------------------------------------------------------------------------
+# Rule model
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FieldCheck:
+    name: str
+    type: Optional[str] = None
+    required: bool = False
+    enum: Optional[list] = None
+    pattern: Optional[str] = None
+    compiled_pattern: Optional[re.Pattern] = field(default=None, repr=False)
+    range: Optional[dict] = None
+    non_null: bool = False
+
+
+@dataclass
+class RuleSet:
+    version: int = 1
+    topic: str = "*"
+    fields: dict[str, Any] = field(default_factory=dict)
+    name: str = "default"
+
+
+def load_rules_yaml(text: str) -> RuleSet:
+    """Parse a rules YAML string into a RuleSet."""
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise RulesConfigError(f"invalid YAML: {exc}") from exc
+    return build_ruleset(data)
+
+
+def load_rules_file(path: str | Path) -> RuleSet:
+    text = Path(path).read_text(encoding="utf-8")
+    return load_rules_yaml(text)
+
+
+def build_ruleset(data: Any) -> RuleSet:
+    if not isinstance(data, dict):
+        raise RulesConfigError("rules file must be a mapping")
+    rs = RuleSet()
+    version = data.get("version", 1)
+    if not isinstance(version, int):
+        raise RulesConfigError("'version' must be an integer")
+    rs.version = version
+    if "topic" in data:
+        rs.topic = str(data["topic"])
+    if "name" in data:
+        rs.name = str(data["name"])
+    if "rules" in data:
+        for r in data["rules"]:
+            _merge_rule(rs, r)
+    elif "fields" in data:
+        _merge_fields(rs, data["fields"], rule_name=rs.name)
+    return rs
+
+
+def _merge_rule(rs: RuleSet, rule: Any) -> None:
+    if not isinstance(rule, dict):
+        raise RuleFieldConfigError("each rule must be a mapping")
+    name = rule.get("name", "unnamed")
+    topic = rule.get("topic", rs.topic)
+    if topic != "*" and rs.topic != "*" and topic != rs.topic:
+        # different topic targeted by a specific rule; keep simple single-topic
+        raise RulesConfigError(
+            f"rule '{name}' topic mismatch (file is for '{rs.topic}', got '{topic}')")
+    fields = rule.get("fields")
+    if fields is None:
+        raise RulesConfigError(f"rule '{name}' has no 'fields'")
+    _merge_fields(rs, fields, rule_name=name)
+
+
+def _merge_fields(rs: RuleSet, fields: Any, rule_name: str) -> None:
+    if not isinstance(fields, dict):
+        raise RuleFieldConfigError(f"rule '{rule_name}' fields must be a mapping")
+    for fname, spec in fields.items():
+        _validate_field_spec(fname, spec, rule_name)
+        check = FieldCheck(name=fname)
+        if "type" in spec:
+            check.type = str(spec["type"]).lower()
+            _validate_type(fname, check.type, rule_name)
+        if spec.get("required"):
+            check.required = True
+        if "enum" in spec:
+            check.enum = list(spec["enum"])
+        if "pattern" in spec:
+            check.pattern = str(spec["pattern"])
+            try:
+                check.compiled_pattern = re.compile(check.pattern)
+            except re.error as exc:
+                raise RuleFieldConfigError(
+                    f"field '{fname}': invalid regex pattern: {exc}") from exc
+        if "range" in spec:
+            rng = spec["range"]
+            if not isinstance(rng, dict):
+                raise RuleFieldConfigError(f"field '{fname}': range must be a mapping")
+            bounds = {}
+            for key in ("minimum", "maximum"):
+                if key in rng:
+                    v = rng[key]
+                    bounds[key] = float(v) if not isinstance(v, bool) else v
+            if not bounds:
+                raise RuleFieldConfigError(f"field '{fname}': range needs minimum/maximum")
+            check.range = bounds
+        if spec.get("non_null"):
+            check.non_null = True
+        rs.fields[fname] = check
+
+
+def _validate_type(field_name: str, t: str, rule_name: str) -> None:
+    allowed = {
+        "string", "integer", "int", "number", "boolean", "bool",
+        "array", "object", "record", "map",
+    }
+    if t not in allowed:
+        raise UnknownFieldTypeError(
+            f"field '{field_name}' in rule '{rule_name}' has unknown type '{t}'")
+
+
+def _validate_field_spec(field_name: str, spec: Any, rule_name: str) -> None:
+    if not isinstance(spec, dict):
+        raise RuleFieldConfigError(
+            f"field '{field_name}' in rule '{rule_name}' must be a mapping")
+
+    unknown = set(spec) - {"type", "required", "enum", "pattern", "range", "non_null"}
+    if unknown:
+        raise RuleFieldConfigError(
+            f"field '{field_name}' has unknown keys: {sorted(unknown)}")
+
+    # type presence guards
+    if "required" in spec and not isinstance(spec["required"], bool):
+        raise RuleFieldConfigError(f"field '{field_name}' required must be bool")
+    if "non_null" in spec and not isinstance(spec["non_null"], bool):
+        raise RuleFieldConfigError(f"field '{field_name}' non_null must be bool")
+    if "enum" in spec and not isinstance(spec["enum"], list):
+        raise RuleFieldConfigError(f"field '{field_name}' enum must be a list")
+    if "pattern" in spec and not isinstance(spec["pattern"], str):
+        raise RuleFieldConfigError(f"field '{field_name}' pattern must be a string")
+
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Violation:
+    rule: str
+    topic: str
+    partition: int
+    offset: int
+    key: Any
+    field: str
+    check: str
+    message: str
+
+    def to_dict(self) -> dict:
+        return {
+            "rule": self.rule,
+            "topic": self.topic,
+            "partition": self.partition,
+            "offset": self.offset,
+            "key": _json_safe_key(self.key),
+            "field": self.field,
+            "check": self.check,
+            "message": self.message,
+        }
+
+
+def _json_safe_key(key: Any) -> Any:
+    if isinstance(key, (bytes, bytearray)):
+        try:
+            return key.decode("utf-8")
+        except UnicodeDecodeError:
+            return {"$bytes": key.hex()}
+    return key
+
+
+@dataclass
+class Message:
+    """A single Kafka message from a readable source."""
+
+    topic: str
+    partition: int
+    offset: int
+    key: Any
+    value: Any  # decoded dict/record
+
+    def to_dict(self) -> dict:
+        return {
+            "topic": self.topic,
+            "partition": self.partition,
+            "offset": self.offset,
+            "key": _json_safe_key(self.key),
+            "value": self.value,
+        }
+
+
+def validate_message(rs: RuleSet, msg: Message) -> list[Violation]:
+    """Run a message through the rules; returns all violations (none = ok)."""
+    topic_ok = rs.topic == "*" or rs.topic == msg.topic
+    if not topic_ok:
+        return []
+
+    result: list[Violation] = []
+    value = msg.value if isinstance(msg.value, dict) else {}
+    for check in rs.fields.values():
+        present = check.name in (value or {})
+        raw = value.get(check.name) if present else None
+
+        # required check
+        if check.required and not present:
+            result.append(Violation(
+                rule=rs.name, topic=msg.topic, partition=msg.partition,
+                offset=msg.offset, key=msg.key, field=check.name,
+                check="required", message=f"required field missing: '{check.name}'"))
+            continue
+        if not present:
+            continue
+
+        # non_null check
+        if check.non_null and raw is None:
+            result.append(Violation(
+                rule=rs.name, topic=msg.topic, partition=msg.partition,
+                offset=msg.offset, key=msg.key, field=check.name,
+                check="non_null", message=f"field '{check.name}' is null but must be non-null"))
+            continue
+
+        # type check
+        if check.type is not None and raw is not None:
+            if not _type_ok(check.type, raw):
+                result.append(Violation(
+                    rule=rs.name, topic=msg.topic, partition=msg.partition,
+                    offset=msg.offset, key=msg.key, field=check.name,
+                    check="type", message=(
+                        f"field '{check.name}' has type {_type_repr(raw)} "
+                        f"but rule expects {check.type}")))
+        # enum
+        if check.enum is not None and raw is not None and raw not in check.enum:
+            result.append(Violation(
+                rule=rs.name, topic=msg.topic, partition=msg.partition,
+                offset=msg.offset, key=msg.key, field=check.name,
+                check="enum", message=(
+                    f"field '{check.name}' value {raw!r} not in allowed enum "
+                    f"{check.enum!r}")))
+        # pattern
+        if check.compiled_pattern is not None and isinstance(raw, str):
+            if not check.compiled_pattern.match(raw):
+                result.append(Violation(
+                    rule=rs.name, topic=msg.topic, partition=msg.partition,
+                    offset=msg.offset, key=msg.key, field=check.name,
+                    check="pattern", message=(
+                        f"field '{check.name}' value {raw!r} does not match "
+                        f"pattern /{check.pattern}/")))
+        # range
+        if check.range is not None and isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            num = float(raw)
+            for bound, threshold in check.range.items():
+                if bound == "minimum" and num < threshold:
+                    result.append(Violation(
+                        rule=rs.name, topic=msg.topic, partition=msg.partition,
+                        offset=msg.offset, key=msg.key, field=check.name,
+                        check="range", message=(
+                            f"field '{check.name}' value {raw!r} < minimum {threshold}")))
+                if bound == "maximum" and num > threshold:
+                    result.append(Violation(
+                        rule=rs.name, topic=msg.topic, partition=msg.partition,
+                        offset=msg.offset, key=msg.key, field=check.name,
+                        check="range", message=(
+                            f"field '{check.name}' value {raw!r} > maximum {threshold}")))
+
+    return result
+
+
+def _type_ok(t: str, val: Any) -> bool:
+    if val is None:
+        return True  # handled by non_null if that flag is set
+    if t == "string":
+        return isinstance(val, str)
+    if t == "integer" or t == "int":
+        return isinstance(val, int) and not isinstance(val, bool)
+    if t == "number":
+        return isinstance(val, (int, float)) and not isinstance(val, bool)
+    if t == "boolean" or t == "bool":
+        return isinstance(val, bool)
+    if t == "array":
+        return isinstance(val, list)
+    if t in ("object", "record", "map"):
+        return isinstance(val, dict)
+    return False
+
+
+def _type_repr(val: Any) -> str:
+    if isinstance(val, bool):
+        return "boolean"
+    if isinstance(val, int):
+        return "integer"
+    if isinstance(val, float):
+        return "number"
+    if isinstance(val, str):
+        return "string"
+    if isinstance(val, list):
+        return "array"
+    if isinstance(val, dict):
+        return "object"
+    return type(val).__name__
+
+
+# ---------------------------------------------------------------------------
+# Message sources (offline fixtures)
+# ---------------------------------------------------------------------------
+
+
+def iter_messages_from_json(path: str | Path, topic: Optional[str] = None) -> Iterator[Message]:
+    """Yield Message objects from a JSON fixture.
+
+    Fixture shape (per topic):
+
+        { "topic": "payments",
+          "partition": 0,
+          "messages": [ {"offset": 3, "key": "k1", "value": {...}}, ... ] }
+
+    Or a list of bare records::
+
+        { "messages": [ {"value": {...}} ] }
+    """
+    data = Path(path).read_text(encoding="utf-8")
+    try:
+        root = json.loads(data)
+    except json.JSONDecodeError as exc:
+        raise RulesConfigError(f"invalid message fixture JSON: {exc}") from exc
+
+    if isinstance(root, list):
+        partition = 0
+        for i, item in enumerate(root):
+            if not isinstance(item, dict) or "value" not in item:
+                continue
+            offset = item.get("offset", i)
+            key = item.get("key", None)
+            yield Message(
+                topic=topic or item.get("topic", "unknown"),
+                partition=item.get("partition", 0),
+                offset=offset,
+                key=key,
+                value=item.get("value"),
+            )
+        return
+
+    messages = root.get("messages", [])
+    default_topic = root.get("topic", topic or "unknown")
+    default_partition = root.get("partition", 0)
+    for i, item in enumerate(messages):
+        if not isinstance(item, dict):
+            continue
+        yield Message(
+            topic=item.get("topic", default_topic),
+            partition=item.get("partition", default_partition),
+            offset=item.get("offset", i),
+            key=item.get("key"),
+            value=item.get("value"),
+        )
+
+
+def validate_fixture_file(rs: RuleSet, path: str | Path) -> list[Violation]:
+    """Validate every message read from a JSON fixture against a ruleset."""
+    out: list[Violation] = []
+    for msg in iter_messages_from_json(path=path, topic=rs.topic):
+        out.extend(validate_message(rs, msg))
+    return out

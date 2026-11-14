@@ -1,0 +1,47 @@
+{
+  "topic": "payments",
+  "partition": 0,
+  "messages": [
+    {"offset": 0, "key": "pay_001", "value": {
+      "payment_id": "pay_001",
+      "amount_cents": 2500,
+      "currency": "USD",
+      "status": "ACCEPTED",
+      "fee_cents": 25
+    }},
+    {"offset": 1, "key": "pay_002", "value": {
+      "payment_id": "pay_002",
+      "amount_cents": -150,
+      "currency": "usd",
+      "status": "PENDING",
+      "fee_cents": 0
+    }},
+    {"offset": 2, "key": "pay_003", "value": {
+      "payment_id": 12345,
+      "amount_cents": "not-a-number",
+      "currency": "EUR",
+      "status": "ACCEPTED",
+      "fee_cents": 10
+    }},
+    {"offset": 3, "key": "pay_004", "value": {
+      "amount_cents": 5000,
+      "currency": "GBP",
+      "status": "EXPIRED",
+      "fee_cents": null
+    }},
+    {"offset": 4, "key": "pay_005", "value": {
+      "payment_id": "pay_005",
+      "amount_cents": 999999999999999,
+      "currency": "JPY",
+      "status": "REJECTED",
+      "fee_cents": 100
+    }},
+    {"offset": 5, "key": "pay_006", "value": {
+      "payment_id": "pay_006",
+      "amount_cents": 100,
+      "currency": "CAD",
+      "status": "ACCEPTED",
+      "fee_cents": 5
+    }}
+  ]
+}
