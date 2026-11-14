@@ -1,0 +1,39 @@
+{
+  "subjects": {
+    "payments-value": [
+      {
+        "id": 1,
+        "version": 1,
+        "schema": {
+          "type": "record",
+          "name": "Payment",
+          "namespace": "com.acme",
+          "doc": "original payment",
+          "fields": [
+            {"name": "payment_id", "type": "string"},
+            {"name": "amount_cents", "type": "long"},
+            {"name": "currency", "type": "string"},
+            {"name": "status", "type": "string"}
+          ]
+        }
+      },
+      {
+        "id": 2,
+        "version": 2,
+        "schema": {
+          "type": "record",
+          "name": "Payment",
+          "namespace": "com.acme",
+          "fields": [
+            {"name": "payment_id", "type": "string"},
+            {"name": "amount_cents", "type": "long"},
+            {"name": "currency", "type": "string"},
+            {"name": "status", "type": "string"},
+            {"name": "fee_cents", "type": ["null", "long"], "default": null},
+            {"name": "created_at", "type": ["null", "string"], "default": null}
+          ]
+        }
+      }
+    ]
+  }
+}

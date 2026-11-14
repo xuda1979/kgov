@@ -1,0 +1,181 @@
+{
+  "format": "avro",
+  "series": [
+    {
+      "name": "user",
+      "versions": [
+        {
+          "id": 1,
+          "version": 1,
+          "schema": {
+            "type": "record",
+            "name": "User",
+            "namespace": "com.example",
+            "doc": "original user record",
+            "fields": [
+              {"name": "id", "type": "long"},
+              {"name": "full_name", "type": "string"}
+            ]
+          }
+        },
+        {
+          "id": 2,
+          "version": 2,
+          "schema": {
+            "type": "record",
+            "name": "User",
+            "namespace": "com.example",
+            "fields": [
+              {"name": "id", "type": "long"},
+              {"name": "full_name", "type": "string"},
+              {"name": "email", "type": ["null", "string"], "default": null}
+            ]
+          }
+        },
+        {
+          "id": 3,
+          "version": 3,
+          "schema": {
+            "type": "record",
+            "name": "User",
+            "namespace": "com.example",
+            "fields": [
+              {"name": "id", "type": "long"},
+              {"name": "full_name", "type": "string"},
+              {"name": "email", "type": ["null", "string"], "default": null},
+              {"name": "age", "type": "int", "default": 0}
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "order",
+      "series": [
+        {
+          "name": "order_break",
+          "compare": {
+            "before": {
+              "id": 1,
+              "version": 1,
+              "schema": {
+                "type": "record",
+                "name": "Order",
+                "namespace": "com.example",
+                "fields": [
+                  {"name": "order_id", "type": "string"},
+                  {"name": "customer_id", "type": "long"},
+                  {"name": "amount_cents", "type": "int"},
+                  {"name": "status", "type": "string"}
+                ]
+              }
+            },
+            "after": {
+              "id": 2,
+              "version": 2,
+              "schema": {
+                "type": "record",
+                "name": "Order",
+                "namespace": "com.example",
+                "fields": [
+                  {"name": "order_id", "type": "string"},
+                  {"name": "customer_id", "type": "long"},
+                  {"name": "amount_cents", "type": "long"}
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "schema_evolution_avro",
+      "series": [
+        {
+          "name": "avro_removed_field",
+          "compare": {
+            "before": {
+              "id": 1,
+              "version": 1,
+              "schema": {
+                "type": "record",
+                "name": "Event",
+                "fields": [
+                  {"name": "id", "type": "string"},
+                  {"name": "payload", "type": "string"}
+                ]
+              }
+            },
+            "after": {
+              "id": 2,
+              "version": 2,
+              "schema": {
+                "type": "record",
+                "name": "Event",
+                "fields": [
+                  {"name": "id", "type": "string"}
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "avro_added_required_field",
+          "compare": {
+            "before": {
+              "id": 1,
+              "version": 1,
+              "schema": {
+                "type": "record",
+                "name": "Event",
+                "fields": [
+                  {"name": "id", "type": "string"}
+                ]
+              }
+            },
+            "after": {
+              "id": 2,
+              "version": 2,
+              "schema": {
+                "type": "record",
+                "name": "Event",
+                "fields": [
+                  {"name": "id", "type": "string"},
+                  {"name": "new_required", "type": "long"}
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "avro_added_optional_field",
+          "compare": {
+            "before": {
+              "id": 1,
+              "version": 1,
+              "schema": {
+                "type": "record",
+                "name": "Event",
+                "fields": [
+                  {"name": "id", "type": "string"}
+                ]
+              }
+            },
+            "after": {
+              "id": 2,
+              "version": 2,
+              "schema": {
+                "type": "record",
+                "name": "Event",
+                "fields": [
+                  {"name": "id", "type": "string"},
+                  {"name": "new_optional", "type": ["null", "string"], "default": null}
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

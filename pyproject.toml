@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kgov"
+version = "0.1.0"
+description = "Kafka topic governance assistant: schema diff + dirty-data rules"
+requires-python = ">=3.11"
+dependencies = [
+    "avro>=1.11",
+    "jsonschema>=4.18",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+broker = ["confluent-kafka>=2.5"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+kgov = "kgov.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.setuptools]
+packages = ["kgov", "kgov.registry"]
