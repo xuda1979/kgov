@@ -182,6 +182,20 @@ def test_registry_subjects_as_list_is_ignored():
     assert payments.schema_version is None
 
 
+def test_registry_subject_non_list_value_is_ignored():
+    """A registry subject whose version value is not a list (int/string/single
+    dict) must not crash reversed()/iteration; no history is resolvable."""
+    for version_value in (5, "garbage", None, {"version": 1}):
+        rep = build_governance_report(
+            topics_fixture=[{"name": "payments", "schema_subject": "payments-value"}],
+            registry_fixture={"subjects": {"payments-value": version_value}},
+            now=NOW,
+        )
+        payments = rep.topics[0]
+        assert payments.schema_version is None
+        assert payments.schema_state == "NONE"
+
+
 def test_topics_fixture_non_list_raises_value_error(tmp_path):
     """A topics fixture that does not resolve to a list (e.g. null) must fail
     with a clean ValueError rather than a TypeError on iteration."""

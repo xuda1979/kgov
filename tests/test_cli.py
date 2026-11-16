@@ -312,6 +312,23 @@ def test_report_registry_junk_versions_exit_0(tmp_path, capsys):
     assert payments["schema_state"] == "COMPATIBLE"
 
 
+@pytest.mark.parametrize("version_value", ['"garbage"', "5", "null", '{"version": 1}'])
+def test_report_registry_subject_non_list_value_exit_0(tmp_path, capsys, version_value):
+    """A registry subject whose version value is not a list (string, int,
+    null, single dict) must be treated as no resolvable history (exit 0),
+    not crash with 'int' object is not reversible."""
+    reg = tmp_path / "reg.json"
+    reg.write_text(f'{{"subjects": {{"payments-value": {version_value}}}}}',
+                   encoding="utf-8")
+    code = main(["report", "--topics", str(FIXTURES / "topics" / "topics.json"),
+                 "--registry", str(reg)])
+    assert code == 0
+    data = json.loads(capsys.readouterr().out)
+    payments = next(t for t in data["topics"] if t["name"] == "payments")
+    assert payments["schema_version"] is None
+    assert payments["schema_state"] == "NONE"
+
+
 def test_report_tags_null_or_non_list_exit_0(tmp_path, capsys):
     """A topics entry whose tags are null/non-list must not crash (exit 0);
     malformed tags are treated as empty."""

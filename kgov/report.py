@@ -138,6 +138,10 @@ def build_topic_state(
         # no resolvable versions — ignore it rather than crash on .get
         subjects = {}
     versions = subjects.get(subject, []) if subject else []
+    # only a list of version entries describes a history; junk values
+    # (ints, strings, dicts, ...) must not crash reversed()/iteration below
+    if not isinstance(versions, list):
+        versions = []
     # only mapping entries describe a version — ignore junk (strings, ints, ...)
     latest = next((v for v in reversed(versions) if isinstance(v, dict)), None)
     if latest:
