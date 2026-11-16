@@ -270,6 +270,19 @@ def test_report_non_utf8_violations_exit_3(tmp_path, capsys):
     assert "not valid UTF-8" in capsys.readouterr().err
 
 
+def test_report_violations_junk_topic_exit_0(tmp_path, capsys):
+    """Violations with a non-string topic value (e.g. a list) must be ignored
+    cleanly (exit 0), not crash with an unhashable-key TypeError."""
+    vio = tmp_path / "vio.json"
+    vio.write_text('[{"topic": ["payments"]}, {"topic": "payments"}]', encoding="utf-8")
+    code = main(["report", "--topics", str(FIXTURES / "topics" / "topics.json"),
+                 "--violations", str(vio)])
+    assert code == 0
+    data = json.loads(capsys.readouterr().out)
+    payments = next(t for t in data["topics"] if t["name"] == "payments")
+    assert payments["violation_count"] == 1
+
+
 def test_report_check_directory_as_file_exit_3(tmp_path, capsys):
     """A directory passed in place of a file must fail cleanly (exit 3),
     not crash with IsADirectoryError."""

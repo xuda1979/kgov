@@ -224,7 +224,9 @@ def build_governance_report(
     counts: dict[str, int] = {}
     for vio in rule_violations or []:
         topic = vio.get("topic") if isinstance(vio, dict) else getattr(vio, "topic", None)
-        if topic:
+        # only string names can match a topic row; junk values (lists, dicts,
+        # ints, ...) are ignored rather than crashing on an unhashable key
+        if isinstance(topic, str) and topic:
             counts[topic] = counts.get(topic, 0) + 1
 
     now = now or datetime.now(timezone.utc)

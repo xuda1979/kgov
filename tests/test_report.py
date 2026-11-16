@@ -185,3 +185,21 @@ def test_non_utf8_fixture_raises_value_error(tmp_path):
     fixture.write_bytes(b'\xff\xfe{"topics": []}')
     with pytest.raises(ValueError, match="not valid UTF-8"):
         build_governance_report(topics_fixture=fixture, now=NOW)
+
+
+def test_junk_violation_topic_values_ignored():
+    """Violations whose 'topic' value is not a string (e.g. a list) must be
+    ignored when accumulating per-topic counts, not crash on dict keying."""
+    rep = build_governance_report(
+        topics_fixture=FIXTURES / "topics" / "topics.json",
+        rule_violations=[
+            {"topic": "payments"},
+            {"topic": ["payments"]},   # unhashable -> would crash before fix
+            {"topic": 42},
+            {"topic": None},
+            {"topic": ""},
+        ],
+        now=NOW,
+    )
+    payments = next(t for t in rep.topics if t.name == "payments")
+    assert payments.violation_count == 1
