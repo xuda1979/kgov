@@ -118,7 +118,12 @@ def build_topic_state(
     """Derive a single topic's governance row from fixture inputs."""
     settings = settings or StalenessSettings()
     now = now or datetime.now(timezone.utc)
-    if now.tzinfo is None:
+    if not isinstance(now, datetime):
+        # a junk 'now' argument (an int, bytes, a string, ...) is not a
+        # usable clock; fall back to the current instant rather than crash
+        # on .tzinfo below
+        now = datetime.now(timezone.utc)
+    elif now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
 
     if not isinstance(topic, dict) or not topic.get("name"):
@@ -135,6 +140,11 @@ def build_topic_state(
         )
     ts = TopicState(name=name)
     ts.owner = topic.get("owner") or "unknown"
+    # only a string names an owner; junk values (bytes, ints, lists, dicts,
+    # ...) are either non-JSON-safe (bytes crash to_json) or meaningless —
+    # drop to the default rather than crash to_json/CSV
+    if not isinstance(ts.owner, str):
+        ts.owner = "unknown"
     tags = topic.get("tags", [])
     # only string elements describe a tag; junk elements (ints, dicts, ...)
     # would crash the CSV join below (TypeError) and are meaningless as tags
@@ -170,7 +180,11 @@ def build_topic_state(
     # only mapping entries describe a version — ignore junk (strings, ints, ...)
     latest = next((v for v in reversed(versions) if isinstance(v, dict)), None)
     if latest:
-        ts.schema_version = latest.get("version")
+        # only an int or str is a JSON-safe version number; junk values
+        # (bytes, lists, dicts, ...) would crash to_json/CSV serialization
+        # — drop them so the report row stays export-safe
+        version = latest.get("version")
+        ts.schema_version = version if isinstance(version, (int, str)) else None
         compat = latest.get("compatibility")
         # only string compat values describe a state; junk (lists, dicts, ...)
         # would crash the mapping lookup on an unhashable key

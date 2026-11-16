@@ -445,3 +445,51 @@ def test_rule_violations_non_list_ignored():
         now=NOW,
     )
     assert rep2.topics[0].violation_count == 1
+
+
+def test_junk_owner_values_fall_back_to_unknown():
+    """A topic 'owner' value that is not a string (bytes, an int, a list, a
+    dict, booleans, ...) must not leak into the row model where it would
+    crash to_json/CSV serialization (bytes is not JSON-serializable); it
+    falls back to 'unknown' instead."""
+    for junk in (b"team", 42, 2.5, ["core"], {"k": 1}, True, False):
+        rep = build_governance_report(
+            topics_fixture=[{"name": "payments", "owner": junk}],
+            now=NOW,
+        )
+        ts = rep.topics[0]
+        assert ts.owner == "unknown"
+        json.dumps(ts.to_dict())  # row model must stay JSON-safe
+        report_to_csv(rep)
+
+
+def test_junk_registry_version_value_dropped():
+    """A registry version entry whose 'version' value is not JSON-safe (e.g.
+    bytes) must not leak into schema_version where it would crash to_json;
+    the junk value is dropped to None while the row stays export-safe."""
+    rep = build_governance_report(
+        topics_fixture=[{"name": "payments", "schema_subject": "payments-value"}],
+        registry_fixture={"subjects": {"payments-value": [
+            {"version": b"2", "compatibility": "COMPATIBLE"},
+        ]}},
+        now=NOW,
+    )
+    ts = rep.topics[0]
+    assert ts.schema_version is None
+    assert ts.schema_state == "COMPATIBLE"
+    json.dumps(ts.to_dict())
+    report_to_csv(rep)
+
+
+def test_junk_now_arg_falls_back_to_current_time():
+    """A 'now' argument that is not a datetime (an int, bytes, a string, ...)
+    must not crash on .tzinfo; the report falls back to the current instant
+    instead of raising a raw AttributeError."""
+    for junk in (1740000000, "2026-11-14T22:00:00+00:00", b"now", [1], {"k": 1}):
+        rep = build_governance_report(
+            topics_fixture=[{"name": "payments"}],
+            now=junk,
+        )
+        assert rep.topics[0].name == "payments"
+        ts = build_topic_state({"name": "payments"}, {}, {}, {}, now=junk)
+        assert ts.name == "payments"
