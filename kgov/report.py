@@ -58,7 +58,12 @@ def _parse_dt(value: Any) -> Optional[datetime]:
     if isinstance(value, datetime):
         dt = value
     elif isinstance(value, (int, float)):
-        dt = datetime.fromtimestamp(value, tz=timezone.utc)
+        try:
+            dt = datetime.fromtimestamp(value, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            # out-of-range / platform-unrepresentable timestamps carry no
+            # usable time — treat as absent instead of crashing the report
+            return None
     else:
         try:
             s = str(value)

@@ -272,6 +272,24 @@ def test_partitions_and_replication_junk_fall_back_to_defaults():
     assert isinstance(d["c"].partitions, int)
 
 
+def test_out_of_range_timestamps_treated_as_absent():
+    """An int timestamp beyond the platform's time_t range (e.g. 1e20) must
+    not crash the report with OverflowError; the value is treated as absent."""
+    rep = build_governance_report(
+        topics_fixture=[
+            {"name": "a", "latest_message_at": 99999999999999999999999},
+            {"name": "b", "latest_message_at": -99999999999999999999999},
+        ],
+        groups_fixture={"groups": {"c": {"last_consumed_at": 99999999999999999999999}}},
+        now=NOW,
+    )
+    d = {t.name: t for t in rep.topics}
+    assert d["a"].latest_message_at is None
+    assert d["a"].stale is False
+    assert d["b"].latest_message_at is None
+    assert d["b"].stale is False
+
+
 def test_registry_junk_version_entries_ignored():
     """A registry subject version list containing non-dict junk (even as the
     last/latest entry) must not crash the report build."""

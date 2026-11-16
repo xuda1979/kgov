@@ -329,6 +329,25 @@ def test_report_registry_subject_non_list_value_exit_0(tmp_path, capsys, version
     assert payments["schema_state"] == "NONE"
 
 
+def test_report_out_of_range_timestamps_exit_0(tmp_path, capsys):
+    """Int timestamps beyond the platform time_t range (in latest_message_at
+    or last_consumed_at) must be treated as absent, not crash with
+    OverflowError (exit 0)."""
+    fixture = tmp_path / "topics.json"
+    fixture.write_text('{"topics": [{"name": "orders", "latest_message_at": '
+                       '99999999999999999999999}]}', encoding="utf-8")
+    groups = tmp_path / "groups.json"
+    groups.write_text('{"groups": {"orders": {"last_consumed_at": '
+                      '99999999999999999999999}}}', encoding="utf-8")
+    code = main(["report", "--topics", str(fixture), "--groups", str(groups)])
+    assert code == 0
+    data = json.loads(capsys.readouterr().out)
+    orders = data["topics"][0]
+    assert orders["latest_message_at"] is None
+    assert orders["last_consumed_at"] is None
+    assert orders["stale"] is False
+
+
 def test_report_tags_null_or_non_list_exit_0(tmp_path, capsys):
     """A topics entry whose tags are null/non-list must not crash (exit 0);
     malformed tags are treated as empty."""
