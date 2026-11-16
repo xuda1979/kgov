@@ -196,6 +196,18 @@ def test_decode_value_text_when_decoder_refuses():
     assert _decode_value(b"plain text", refuse) == "plain text"
 
 
+def test_decode_value_tolerates_misbehaving_decoder():
+    """A decoder that raises must not abort the scan — the text / hex fallback
+    kicks in exactly as if the decoder had declined the payload."""
+    from kgov.broker import _decode_value
+
+    def boom(raw: bytes) -> object:  # pragma: no cover - body never runs
+        raise RuntimeError("boom")
+
+    assert _decode_value(b"plain text", boom) == "plain text"
+    assert _decode_value(b"\xff\xfe", boom) == {"$bytes": "fffe"}
+
+
 # ---------------------------------------------------------------------------
 # Gating
 # ---------------------------------------------------------------------------

@@ -73,7 +73,13 @@ def _decode_value(
     except (UnicodeDecodeError, json.JSONDecodeError):
         pass
     if decoder is not None:
-        decoded = decoder(raw)
+        try:
+            decoded = decoder(raw)
+        except Exception:
+            # a misbehaving decoder must not abort the scan — fall through to
+            # the text / hex fallback below (the wire decoder is already
+            # defensive; this covers any caller-supplied decoder)
+            decoded = _UNDECODED
         if decoded is not _UNDECODED:
             return decoded
     try:
