@@ -299,6 +299,22 @@ def test_report_registry_junk_versions_exit_0(tmp_path, capsys):
     assert payments["schema_state"] == "COMPATIBLE"
 
 
+def test_report_groups_junk_topic_keys_exit_0(tmp_path, capsys):
+    """A list-form groups fixture whose topic/group key is non-string (list)
+    must be skipped cleanly (exit 0), not crash on an unhashable key."""
+    groups = tmp_path / "groups.json"
+    groups.write_text('{"groups": ['
+                      '{"topic": ["payments"], "last_consumed_at": "2026-11-13T00:00:00Z"}, '
+                      '{"group": "payments", "last_consumed_at": "2026-11-13T00:00:00Z"}]}',
+                      encoding="utf-8")
+    code = main(["report", "--topics", str(FIXTURES / "topics" / "topics.json"),
+                 "--groups", str(groups)])
+    assert code == 0
+    data = json.loads(capsys.readouterr().out)
+    payments = next(t for t in data["topics"] if t["name"] == "payments")
+    assert payments["last_consumed_at"] is not None
+
+
 def test_report_check_directory_as_file_exit_3(tmp_path, capsys):
     """A directory passed in place of a file must fail cleanly (exit 3),
     not crash with IsADirectoryError."""

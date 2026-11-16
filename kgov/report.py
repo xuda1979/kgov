@@ -216,8 +216,14 @@ def build_governance_report(
         raw_groups = groups_fixture if isinstance(groups_fixture, dict) else _read_json(groups_fixture)
     groups = raw_groups.get("groups") if isinstance(raw_groups, dict) and "groups" in raw_groups else raw_groups
     if isinstance(groups, list):
-        # list-form groups may contain junk entries — keep only mappings
-        groups = {g.get("topic", g.get("group")): g for g in groups if isinstance(g, dict)}
+        # list-form groups may contain junk entries — keep only mappings and
+        # string keys (a list/dict key would crash the dict comprehension)
+        groups = {
+            key: g
+            for g in groups if isinstance(g, dict)
+            for key in [(g.get("topic", g.get("group")))]
+            if isinstance(key, str)
+        }
     elif not isinstance(groups, dict):
         groups = {}
 

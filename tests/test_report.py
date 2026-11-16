@@ -140,6 +140,22 @@ def test_groups_list_with_non_dict_entries_is_ignored():
     assert payments.last_consumed_at is None
 
 
+def test_groups_list_with_non_string_keys_is_ignored():
+    """A list-form groups entry whose topic/group key is non-string (e.g. a
+    list) must be skipped, not crash on an unhashable dict key."""
+    rep = build_governance_report(
+        topics_fixture=FIXTURES / "topics" / "topics.json",
+        groups_fixture={"groups": [
+            {"topic": ["payments"], "last_consumed_at": "2026-11-13T00:00:00Z"},
+            {"group": "payments", "last_consumed_at": "2026-11-13T00:00:00Z"},
+        ]},
+        now=NOW,
+    )
+    payments = next(t for t in rep.topics if t.name == "payments")
+    assert payments.last_consumed_at == "2026-11-13T00:00:00+00:00"
+    assert payments.stale is False
+
+
 def test_non_mapping_registry_is_ignored():
     """A registry fixture that is not a mapping (e.g. a bare list) must be
     ignored, not crash when a topic references a schema subject."""
