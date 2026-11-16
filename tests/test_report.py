@@ -102,3 +102,24 @@ def test_registry_breaking_state_surface():
     )
     orders = next(t for t in rep.topics if t.name == "orders")
     assert orders.schema_state == "BREAKING"
+
+
+def test_topic_without_name_raises_value_error():
+    """A malformed topics entry must raise a clean error, not KeyError."""
+    with pytest.raises(ValueError, match="'name'"):
+        build_governance_report(
+            topics_fixture=[{"partitions": 4}],
+            now=NOW,
+        )
+
+
+def test_non_mapping_group_entry_is_ignored():
+    """Non-dict consumer-group entries must not crash the report build."""
+    rep = build_governance_report(
+        topics_fixture=FIXTURES / "topics" / "topics.json",
+        groups_fixture={"groups": {"payments": "not-a-dict"}},
+        now=NOW,
+    )
+    payments = next(t for t in rep.topics if t.name == "payments")
+    assert payments.last_consumed_at is None
+    assert payments.stale is False

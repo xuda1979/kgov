@@ -107,6 +107,10 @@ def build_topic_state(
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
 
+    if not isinstance(topic, dict) or not topic.get("name"):
+        raise ValueError(
+            f"topics fixture entry must be a mapping with a 'name': {topic!r}"
+        )
     name = topic["name"]
     ts = TopicState(name=name)
     ts.owner = topic.get("owner") or "unknown"
@@ -130,7 +134,9 @@ def build_topic_state(
     latest_msg = _parse_dt(topic.get("latest_message_at"))
     ts.latest_message_at = latest_msg.isoformat() if latest_msg else None
 
-    group = groups.get(name) or {}
+    group = groups.get(name)
+    if not isinstance(group, dict):
+        group = {}
     last_consumed = _parse_dt(group.get("last_consumed_at"))
     ts.last_consumed_at = last_consumed.isoformat() if last_consumed else None
 
