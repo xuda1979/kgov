@@ -192,13 +192,20 @@ def build_governance_report(
     registry = {}
     if registry_fixture:
         registry = registry_fixture if isinstance(registry_fixture, dict) else _read_json(registry_fixture)
+    if not isinstance(registry, dict):
+        # a malformed registry (e.g. a bare list) carries no subjects —
+        # ignore it rather than crash on attribute access below
+        registry = {}
 
     raw_groups = {}
     if groups_fixture:
         raw_groups = groups_fixture if isinstance(groups_fixture, dict) else _read_json(groups_fixture)
     groups = raw_groups.get("groups") if isinstance(raw_groups, dict) and "groups" in raw_groups else raw_groups
     if isinstance(groups, list):
-        groups = {g.get("topic", g.get("group")): g for g in groups}
+        # list-form groups may contain junk entries — keep only mappings
+        groups = {g.get("topic", g.get("group")): g for g in groups if isinstance(g, dict)}
+    elif not isinstance(groups, dict):
+        groups = {}
 
     # violation counts per topic
     counts: dict[str, int] = {}

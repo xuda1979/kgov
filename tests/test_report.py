@@ -123,3 +123,31 @@ def test_non_mapping_group_entry_is_ignored():
     payments = next(t for t in rep.topics if t.name == "payments")
     assert payments.last_consumed_at is None
     assert payments.stale is False
+
+
+def test_groups_list_with_non_dict_entries_is_ignored():
+    """A list-form groups fixture with junk (non-dict) entries must not crash
+    when normalized to the keyed lookup map."""
+    rep = build_governance_report(
+        topics_fixture=FIXTURES / "topics" / "topics.json",
+        groups_fixture={"groups": ["not-a-dict", 42, {"group": "orders",
+                                                      "last_consumed_at": "2026-01-01T00:00:00Z"}]},
+        now=NOW,
+    )
+    orders = next(t for t in rep.topics if t.name == "orders")
+    assert orders.last_consumed_at is not None
+    payments = next(t for t in rep.topics if t.name == "payments")
+    assert payments.last_consumed_at is None
+
+
+def test_non_mapping_registry_is_ignored():
+    """A registry fixture that is not a mapping (e.g. a bare list) must be
+    ignored, not crash when a topic references a schema subject."""
+    rep = build_governance_report(
+        topics_fixture=[{"name": "orders", "schema_subject": "orders-value"}],
+        registry_fixture={"registry": ["not-a-dict"]},
+        now=NOW,
+    )
+    orders = rep.topics[0]
+    assert orders.schema_state == "NONE"
+    assert orders.schema_version is None
