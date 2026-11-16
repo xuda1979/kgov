@@ -327,16 +327,18 @@ def validate_message(rs: RuleSet, msg: Message) -> list[Violation]:
                         f"field '{check.name}' value {raw!r} does not match "
                         f"pattern /{check.pattern}/")))
         # range
+        # Compare raw directly: ``float(raw)`` would overflow on integers
+        # beyond the platform double range (OverflowError on e.g. 10**400),
+        # while Python's int-vs-float comparison is exact and overflow-free.
         if check.range is not None and isinstance(raw, (int, float)) and not isinstance(raw, bool):
-            num = float(raw)
             for bound, threshold in check.range.items():
-                if bound == "minimum" and num < threshold:
+                if bound == "minimum" and raw < threshold:
                     result.append(Violation(
                         rule=rs.name, topic=msg.topic, partition=msg.partition,
                         offset=msg.offset, key=msg.key, field=check.name,
                         check="range", message=(
                             f"field '{check.name}' value {raw!r} < minimum {threshold}")))
-                if bound == "maximum" and num > threshold:
+                if bound == "maximum" and raw > threshold:
                     result.append(Violation(
                         rule=rs.name, topic=msg.topic, partition=msg.partition,
                         offset=msg.offset, key=msg.key, field=check.name,

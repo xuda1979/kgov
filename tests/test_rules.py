@@ -170,6 +170,17 @@ def test_violation_range_min_and_max():
     assert any(x.check == "range" and "maximum" in x.message for x in vh)
 
 
+def test_violation_range_huge_integer_no_overflow():
+    """An int beyond the platform double range (e.g. 10**400) must not crash
+    the range check with OverflowError on float(raw); comparisons stay exact."""
+    rs = _rs()
+    big = Message(topic="payments", partition=0, offset=20, key="k",
+                  value={"amount_cents": 10**400, "currency": "USD", "status": "A", "fee_cents": 1})
+    v = validate_message(rs, big)
+    assert any(x.check == "range" and "maximum" in x.message for x in v)
+    assert not any("OverflowError" in x.message for x in v)
+
+
 def test_violation_non_null():
     rs = _rs()
     msg = Message(topic="payments", partition=0, offset=17, key="k",
