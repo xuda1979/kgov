@@ -113,7 +113,11 @@ class AvroRecordDecoder:
         self._decoder_factory = decoder_factory or _default_decoder_factory
 
     def __call__(self, raw: bytes) -> Any:
-        if len(raw) <= CONFLUENT_HEADER or not raw.startswith(CONFLUENT_MAGIC):
+        if (
+            not isinstance(raw, bytes)
+            or len(raw) <= CONFLUENT_HEADER
+            or not raw.startswith(CONFLUENT_MAGIC)
+        ):
             return _UNDECODED
         schema_id = int.from_bytes(raw[1:CONFLUENT_HEADER], byteorder="big")
         try:

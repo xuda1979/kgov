@@ -138,6 +138,18 @@ def test_avro_decoder_rejects_non_wire_bytes(registry_server):
     assert decoder(b"") is _UNDECODED
 
 
+def test_avro_decoder_tolerates_non_bytes_raw(registry_server):
+    """Junk non-bytes raw payloads (None, numbers, strs, bools, containers,
+    bytearray, memoryview) must return the UNDECODED sentinel, not crash with
+    TypeError/AttributeError on len()/startswith() at the wire-format gate."""
+    from kgov.broker import AvroRecordDecoder, _UNDECODED
+
+    decoder = AvroRecordDecoder(registry_server.client)
+    for raw in (None, 0, 1, -1, 3.14, True, False, "strvalue", "\x00" * 6,
+                [], (), {}, {"a": 1}, [1, 2, 3], bytearray(b"\x00"), memoryview(b"\x00")):
+        assert decoder(raw) is _UNDECODED, f"raw {raw!r} must be UNDECODED"
+
+
 def test_avro_decoder_malformed_datum(registry_server):
     """A wire frame whose datum is not decodable returns UNDECODED (no crash)."""
     from kgov.broker import AvroRecordDecoder, _UNDECODED
