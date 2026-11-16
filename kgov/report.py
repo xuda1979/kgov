@@ -152,9 +152,14 @@ def build_topic_state(
     if latest:
         ts.schema_version = latest.get("version")
         compat = latest.get("compatibility")
-        ts.schema_state = {"COMPATIBLE": "COMPATIBLE", "BACKWARD": "COMPATIBLE",
-                           "ADDITIVE": "ADDITIVE", "BREAKING": "BREAKING",
-                           "NONE": "NONE"}.get(compat, "COMPATIBLE") if compat else "COMPATIBLE"
+        # only string compat values describe a state; junk (lists, dicts, ...)
+        # would crash the mapping lookup on an unhashable key
+        if isinstance(compat, str):
+            ts.schema_state = {"COMPATIBLE": "COMPATIBLE", "BACKWARD": "COMPATIBLE",
+                               "ADDITIVE": "ADDITIVE", "BREAKING": "BREAKING",
+                               "NONE": "NONE"}.get(compat, "COMPATIBLE")
+        else:
+            ts.schema_state = "COMPATIBLE"
 
     # message + consumer timestamps
     latest_msg = _parse_dt(topic.get("latest_message_at"))

@@ -290,6 +290,23 @@ def test_out_of_range_timestamps_treated_as_absent():
     assert d["b"].stale is False
 
 
+def test_registry_junk_compatibility_value_tolerated():
+    """A version dict whose 'compatibility' is not a string (e.g. a list) must
+    not crash the state-mapping lookup on an unhashable dict key; the topic
+    falls back to a sane schema state instead of raising TypeError."""
+    rep = build_governance_report(
+        topics_fixture=FIXTURES / "topics" / "topics.json",
+        registry_fixture={"subjects": {"payments-value": [
+            {"version": 2, "compatibility": ["BACKWARD"]},   # unhashable -> would crash
+            {"version": 3, "compatibility": {"BACKWARD": True}},
+        ]}},
+        now=NOW,
+    )
+    payments = next(t for t in rep.topics if t.name == "payments")
+    assert payments.schema_version is not None
+    assert isinstance(payments.schema_state, str)
+
+
 def test_registry_junk_version_entries_ignored():
     """A registry subject version list containing non-dict junk (even as the
     last/latest entry) must not crash the report build."""

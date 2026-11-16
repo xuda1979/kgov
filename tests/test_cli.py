@@ -343,6 +343,22 @@ def test_report_registry_junk_versions_exit_0(tmp_path, capsys):
     assert payments["schema_state"] == "COMPATIBLE"
 
 
+def test_report_registry_junk_compatibility_exit_0(tmp_path, capsys):
+    """A version dict whose 'compatibility' is non-string junk (a list) must
+    not crash the state lookup on an unhashable dict key (exit 0)."""
+    reg = tmp_path / "reg.json"
+    reg.write_text('{"subjects": {"payments-value": '
+                   '[{"version": 2, "compatibility": ["BACKWARD"]}]}}',
+                   encoding="utf-8")
+    code = main(["report", "--topics", str(FIXTURES / "topics" / "topics.json"),
+                 "--registry", str(reg)])
+    assert code == 0
+    data = json.loads(capsys.readouterr().out)
+    payments = next(t for t in data["topics"] if t["name"] == "payments")
+    assert payments["schema_version"] == 2
+    assert isinstance(payments["schema_state"], str)
+
+
 @pytest.mark.parametrize("version_value", ['"garbage"', "5", "null", '{"version": 1}'])
 def test_report_registry_subject_non_list_value_exit_0(tmp_path, capsys, version_value):
     """A registry subject whose version value is not a list (string, int,
