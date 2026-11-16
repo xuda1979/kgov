@@ -196,6 +196,22 @@ def test_registry_subject_non_list_value_is_ignored():
         assert payments.schema_state == "NONE"
 
 
+def test_topic_non_string_schema_subject_ignored():
+    """A topics entry whose schema_subject is not a string (list/int/None) must
+    not crash when looking up the registry subject (unhashable dict key); no
+    schema history is resolvable so the topic falls back to NONE."""
+    for junk in (["payments-value", "x"], 42, {"s": 1}, None, ""):
+        rep = build_governance_report(
+            topics_fixture=[{"name": "payments", "schema_subject": junk}],
+            registry_fixture={"subjects": {"payments-value": [
+                {"version": 2, "compatibility": "COMPATIBLE"}]}},
+            now=NOW,
+        )
+        payments = rep.topics[0]
+        assert payments.schema_version is None
+        assert payments.schema_state == "NONE"
+
+
 def test_topics_fixture_non_list_raises_value_error(tmp_path):
     """A topics fixture that does not resolve to a list (e.g. null) must fail
     with a clean ValueError rather than a TypeError on iteration."""

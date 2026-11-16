@@ -142,6 +142,10 @@ def build_topic_state(
         # a malformed registry (subjects entry that is not a mapping) carries
         # no resolvable versions — ignore it rather than crash on .get
         subjects = {}
+    # only a string subject names a registry entry; junk values (lists, dicts,
+    # ints, ...) are unhashable or meaningless as keys — treat as absent
+    if not isinstance(subject, str) or not subject:
+        subject = None
     versions = subjects.get(subject, []) if subject else []
     # only a list of version entries describes a history; junk values
     # (ints, strings, dicts, ...) must not crash reversed()/iteration below
