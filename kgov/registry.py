@@ -68,6 +68,8 @@ class SchemaRegistryClient:
             raise RegistryError(f"registry {exc.code} for {path}: {body}") from exc
         except urllib.error.URLError as exc:
             raise RegistryError(f"cannot reach {self.base_url}: {exc.reason}") from exc
+        except UnicodeDecodeError as exc:
+            raise RegistryError(f"registry returned invalid UTF-8 for {path}: {exc}") from exc
         except json.JSONDecodeError as exc:
             raise RegistryError(f"registry returned invalid JSON for {path}: {exc}") from exc
 
@@ -113,10 +115,14 @@ class SchemaRegistryClient:
         return self.get_version(subject, "latest")
 
     def get_schema_by_id(self, schema_id: int) -> dict:
-        data = self._get(f"/schemas/ids/{int(schema_id)}")
+        try:
+            schema_id_int = int(schema_id)
+        except (TypeError, ValueError) as exc:
+            raise RegistryError(f"invalid schema id {schema_id!r}") from exc
+        data = self._get(f"/schemas/ids/{schema_id_int}")
         if not isinstance(data, dict):
-            raise RegistryError(f"/schemas/ids/{schema_id} malformed")
-        return {"id": int(schema_id), "schema": _parse_schema_string(data.get("schema"))}
+            raise RegistryError(f"/schemas/ids/{schema_id_int} malformed")
+        return {"id": schema_id_int, "schema": _parse_schema_string(data.get("schema"))}
 
     def _compatibility_level(self, subject: str) -> Optional[str]:
         try:

@@ -207,6 +207,42 @@ def test_unreachable_registry():
         client.list_subjects()
 
 
+def test_get_schema_by_id_junk_args_raise_registry_error():
+    """Junk schema_id args (dict, list, None, non-numeric str, tuple, set) to
+    get_schema_by_id must raise a clean RegistryError, not a raw TypeError /
+    ValueError from int() at the URL-build site. Valid int and numeric-string
+    ids still resolve (wire stubbed)."""
+    c = SchemaRegistryClient("http://127.0.0.1:1")
+    for bad in ({"x": 1}, [1], None, "abc", (1, 2), {1}):
+        with pytest.raises(RegistryError, match="schema id"):
+            c.get_schema_by_id(bad)
+    c._get = lambda path: {"schema": '{"type": "record", "name": "R", "fields": []}'}
+    assert c.get_schema_by_id(7)["id"] == 7
+    assert c.get_schema_by_id("9")["id"] == 9
+
+
+def test_get_non_utf8_body_raises_registry_error(monkeypatch):
+    """A non-UTF-8 response body must raise a clean RegistryError, not leak a
+    raw UnicodeDecodeError (a ValueError subclass that JSONDecodeError's
+    handler does not cover)."""
+    import urllib.request
+
+    class FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b"\xff\xfe\x00\x99"
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=10: FakeResp())
+    c = SchemaRegistryClient("http://127.0.0.1:1")
+    with pytest.raises(RegistryError, match="UTF-8"):
+        c.list_subjects()
+
+
 def test_bind_failure_raises():
     reg = MockRegistry()
     with pytest.raises(MockRegistryError):
