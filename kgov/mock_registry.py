@@ -1,0 +1,269 @@
+"""Local mock Schema Registry — serves the Confluent wire on loopback.
+
+Useful for offline development / tests without a live registry::
+
+    server = MockRegistry(registry_fixture={"subjects": {...}})
+    server.start()
+    client = SchemaRegistryClient(server.base_url)
+    ...
+    server.stop()
+
+Fixture shape is the same JSON the report module consumes
+(``{"subjects": {"<subject>": [{"id", "version", "compatibility",
+"schema"}, ...]}}``). The server is read-only (no registration endpoint).
+"""
+
+from __future__ import annotations
+
+import json
+import socket
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any, Optional
+from urllib.parse import parse_qs, unquote, urlparse
+
+from .registry import SchemaRegistryClient
+
+
+class MockRegistryError(RuntimeError):
+    """The mock server refused to start (e.g. ephemeral port exhausted)."""
+
+
+_JSON_HEADERS = {
+    "Content-Type": "application/vnd.schemaregistry.v1+json, application/json",
+    "Access-Control-Allow-Origin": "*",
+}
+
+
+class RegistryHandler(BaseHTTPRequestHandler):
+    registry: "MockRegistry"
+
+    def log_message(self, fmt: str, *args: Any) -> None:
+        return  # keep the test output quiet
+
+    # -- helpers ---------------------------------------------------------
+
+    def _reply(self, code: int, payload: Any) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Length", str(len(body)))
+        for k, v in _JSON_HEADERS.items():
+            self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _error(self, code: int, message: str, error_code: int = 40401) -> None:
+        self._reply(code, {"error_code": error_code, "message": message})
+
+    def _path_parts(self) -> list[str]:
+        path = unquote(urlparse(self.path).path)
+        return [p for p in path.split("/") if p]
+
+    def _subject_from_path(self) -> Optional[str]:
+        parts = self._path_parts()
+        # /subjects/{subject}/versions[/{version}]
+        if len(parts) >= 2 and parts[0] == "subjects":
+            return parts[1]
+        if len(parts) >= 2 and parts[0] in ("config", "compatibility"):
+            return parts[1]
+        return None
+
+    # -- routing ----------------------------------------------------------
+
+    def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
+        parts = self._path_parts()
+        if not parts:
+            self._reply(200, [])
+            return
+        head = parts[0]
+
+        if head == "subjects":
+            if len(parts) == 1:
+                self._reply(200, self.registry.list_subjects())
+                return
+            subject = parts[1]
+            if len(parts) == 3 and parts[2] == "versions":
+                # /subjects/{subject}/versions
+                versions = self.registry.versions(subject)
+                if versions is None:
+                    self._error(404, f"Subject '{subject}' not found.", 40401)
+                    return
+                self._reply(200, versions)
+                return
+            if len(parts) == 4 and parts[2] == "versions":
+                # /subjects/{subject}/versions/{version}
+                version: Any = parts[3]
+                info = self.registry.version(subject, version)
+                if info is None:
+                    self._error(
+                        404,
+                        f"Version {version} not found for subject '{subject}'.",
+                        40402,
+                    )
+                    return
+                self._reply(200, info)
+                return
+
+        if head == "config":
+            subject = parts[1] if len(parts) > 1 else None
+            level = self.registry.compatibility_level(subject)
+            if level is None:
+                self._error(404, "Config not found.", 40401)
+                return
+            self._reply(200, {"compatibilityLevel": level})
+            return
+
+        if head == "schemas":
+            # /schemas/ids/{id}
+            if len(parts) >= 3 and parts[1] == "ids":
+                try:
+                    schema_id = int(parts[2])
+                except ValueError:
+                    self._error(404, "Schema not found.", 40403)
+                    return
+                schema = self.registry.schema_by_id(schema_id)
+                if schema is None:
+                    self._error(404, f"Schema {schema_id} not found.", 40403)
+                    return
+                self._reply(200, {"schema": json.dumps(schema, ensure_ascii=False)})
+                return
+
+        if head == "mode":
+            self._reply(200, {"mode": "READWRITE"})
+
+        self._error(404, f"No endpoint for {self.path}", 40401)
+
+    def do_POST(self) -> None:  # noqa: N802
+        # Read-only mock: registration endpoints are intentionally absent.
+        self._error(404, "Mock registry is read-only.", 40401)
+
+    def do_PUT(self) -> None:  # noqa: N802
+        self._error(405, "Method Not Allowed", 40501)
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        self._error(405, "Method Not Allowed", 40501)
+
+
+class MockRegistry:
+    """An in-process Confluent-wire Schema Registry backed by a fixture dict."""
+
+    def __init__(self, fixture: dict | None = None):
+        self._fixture: dict[str, list[dict]] = {}
+        if fixture:
+            subjects = fixture.get("subjects", {})
+            for name, versions in subjects.items():
+                self._fixture[name] = list(versions or [])
+        self._server: Optional[ThreadingHTTPServer] = None
+        self._thread: Optional[threading.Thread] = None
+        self._bound_port: int = 0
+
+    # -- lifecycle ---------------------------------------------------------
+
+    def start(self, port: int = 0) -> str:
+        """Bind on loopback (0 => OS-assigned ephemeral port); return base URL."""
+        if self._server:
+            return self.base_url
+        handler = type("BoundHandler", (RegistryHandler,), {"registry": self})
+        try:
+            self._server = ThreadingHTTPServer(("127.0.0.1", port), handler)
+        except OSError as exc:
+            raise MockRegistryError(f"mock registry failed to bind: {exc}") from exc
+        self._bound_port = int(self._server.server_address[1])
+        self._thread = threading.Thread(
+            target=self._server.serve_forever, daemon=True, name="mock-registry"
+        )
+        self._thread.start()
+        return self.base_url
+
+    def stop(self) -> None:
+        if self._server is not None:
+            self._server.shutdown()
+            self._server.server_close()
+            self._server = None
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=5)
+            self._thread = None
+        self._bound_port = 0
+
+    def __enter__(self) -> "MockRegistry":
+        self.start()
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.stop()
+
+    @property
+    def base_url(self) -> str:
+        if self._bound_port:
+            return f"http://127.0.0.1:{self._bound_port}"
+        return "http://127.0.0.1:0"
+
+    @property
+    def client(self) -> SchemaRegistryClient:
+        """A ready-to-use SchemaRegistryClient pointed at this server."""
+        return SchemaRegistryClient(self.base_url)
+
+    # -- data access (wired into the handler above) --------------------------
+
+    def set_fixture(self, fixture: dict) -> None:
+        """Swap the backing fixture (for multi-phase tests)."""
+        self._fixture = {}
+        for name, versions in (fixture.get("subjects", {}) or {}).items():
+            self._fixture[name] = list(versions or [])
+
+    def add_subject(self, subject: str, *versions: dict) -> None:
+        """Append a subject (or extend an existing one) with one or more versions."""
+        existing = self._fixture.setdefault(subject, [])
+        existing.extend(versions)
+
+    def list_subjects(self) -> list[str]:
+        return sorted(self._fixture.keys())
+
+    def versions(self, subject: str) -> Optional[list[int]]:
+        versions = self._fixture.get(subject)
+        if versions is None:
+            return None
+        return sorted(int(v.get("version", i)) for i, v in enumerate(versions, start=1))
+
+    def version(self, subject: str, version: Any = "latest") -> Optional[dict]:
+        versions = self._fixture.get(subject)
+        if not versions:
+            return None
+        if version == "latest":
+            info = versions[-1]
+        else:
+            try:
+                target = int(version)
+            except (TypeError, ValueError):
+                return None
+            info = next(
+                (v for v in versions if int(v.get("version", -1)) == target), None
+            )
+            if info is None:
+                return None
+        return {
+            "subject": subject,
+            "version": int(info.get("version", len(versions))),
+            "id": int(info["id"]) if "id" in info else None,
+            "compatibility": info.get("compatibility"),
+            "schema": json.dumps(info.get("schema"), ensure_ascii=False),
+        }
+
+    def compatibility_level(self, subject: Optional[str]) -> Optional[str]:
+        if subject is None:
+            return "BACKWARD"
+        versions = self._fixture.get(subject)
+        if not versions:
+            return None
+        pending = [v.get("compatibility") for v in versions if v.get("compatibility")]
+        # Use the *newest* explicit compatibility marker, falling back to BACKWARD.
+        if pending:
+            return str(pending[-1])
+        return "BACKWARD"
+
+    def schema_by_id(self, schema_id: int) -> Optional[Any]:
+        for versions in self._fixture.values():
+            for v in versions:
+                if int(v.get("id", -1)) == int(schema_id):
+                    return v.get("schema")
+        return None

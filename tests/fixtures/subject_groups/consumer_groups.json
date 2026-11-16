@@ -1,0 +1,22 @@
+{
+  "groups": {
+    "payments": {
+      "topic": "payments",
+      "group": "payments-consumer",
+      "last_consumed_at": "2026-11-14T07:00:00Z",
+      "consumer_count": 3
+    },
+    "orders": {
+      "topic": "orders",
+      "group": "orders-etl",
+      "last_consumed_at": "2026-09-20T10:00:00Z",
+      "consumer_count": 1
+    },
+    "inventory-events": {
+      "topic": "inventory-events",
+      "group": "inventory-rules",
+      "last_consumed_at": "2026-11-13T22:00:00Z",
+      "consumer_count": 2
+    }
+  }
+}

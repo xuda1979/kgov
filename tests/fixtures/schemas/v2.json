@@ -1,0 +1,23 @@
+{
+  "type": "record",
+  "name": "User",
+  "namespace": "com.example",
+  "fields": [
+    {
+      "name": "id",
+      "type": "long"
+    },
+    {
+      "name": "full_name",
+      "type": "string"
+    },
+    {
+      "name": "email",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    }
+  ]
+}

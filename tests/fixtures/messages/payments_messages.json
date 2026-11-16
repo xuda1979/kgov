@@ -38,7 +38,7 @@
     }},
     {"offset": 5, "key": "pay_006", "value": {
       "payment_id": "pay_006",
-      "amount_cents": 100,
+      "amount_cents": null,
       "currency": "CAD",
       "status": "ACCEPTED",
       "fee_cents": 5

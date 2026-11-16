@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+site-packages/
+
+# Test / tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Agent session state
+.future-code/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Local outputs
+out/
+*.log

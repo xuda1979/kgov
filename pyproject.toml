@@ -25,4 +25,6 @@ testpaths = ["tests"]
 pythonpath = ["."]
 
 [tool.setuptools]
-packages = ["kgov", "kgov.registry"]
+# New P3 modules live as flat modules inside the ``kgov`` package, so the
+# explicit package list stays correct without a find directive.
+packages = ["kgov"]

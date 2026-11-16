@@ -212,6 +212,12 @@ def test_fixture_validation_yields_expected_violations():
     off4 = by_offset[4]
     assert any(v.check == "range" and v.field == "amount_cents" and "maximum" in v.message for v in off4)
 
-    # messages 0 and 5 are clean
+    # message 5: amount_cents null (non_null)
+    off5 = by_offset[5]
+    assert any(v.check == "non_null" and v.field == "amount_cents" for v in off5)
+
+    # five dirty sample messages: offsets 1..5 each reported
+    assert set(by_offset) == {1, 2, 3, 4, 5}
+
+    # message 0 is clean
     assert 0 not in by_offset
-    assert 5 not in by_offset

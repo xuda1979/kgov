@@ -1,0 +1,233 @@
+"""Governance report: topic inventory + owners + staleness + violation counts.
+
+Fully offline. Backed by fixture inputs:
+
+- ``topics``  — list of ``{name, partitions, replication_factor, owner, tags[]}``
+- ``consumer_groups`` — list of ``{group, topics[], last_consumed_at (iso) / lag}``
+- ``messages`` per topic — to derive sane-but-optional violation counts
+  (alternatively a precomputed violation_count may be given directly).
+
+The final report is a list of rows, one per topic::
+
+    name, owner, tags, partitions, replication, schema_subject,
+    schema_version, schema_state (COMPATIBLE/PENDING/BREAKING/NONE),
+    latest_message_at, last_consumed_at, stale (bool), violation_count
+
+Staleness is evaluated against the current time when ``now`` is not provided.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+from .model import now_utc_iso
+
+
+# ---------------------------------------------------------------------------
+# Input loading
+# ---------------------------------------------------------------------------
+
+
+def _read_json(path: str | Path) -> Any:
+    data = Path(path).read_text(encoding="utf-8")
+    try:
+        return json.loads(data)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{path}: invalid JSON fixture: {exc}") from exc
+
+
+@dataclass
+class StalenessSettings:
+    """Tunables determining the 'stale' flag."""
+
+    consumer_grace_seconds: int = 86400 * 3      # 3 days without a consumer read
+    producer_grace_seconds: int = 86400 * 2      # 2 days without a produced message
+    no_consumer_since_epoch: bool = False        # when there are no consumer groups at all
+
+
+def _parse_dt(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, (int, float)):
+        dt = datetime.fromtimestamp(value, tz=timezone.utc)
+    else:
+        try:
+            s = str(value)
+            if s.endswith("Z"):
+                s = s[:-1] + "+00:00"
+            dt = datetime.fromisoformat(s)
+        except (ValueError, TypeError):
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+# ---------------------------------------------------------------------------
+# Report model
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class TopicState:
+    name: str
+    owner: str = "unknown"
+    tags: list[str] = field(default_factory=list)
+    partitions: int = 1
+    replication_factor: int = 1
+    schema_subject: Optional[str] = None
+    schema_version: Optional[int] = None
+    schema_state: str = "NONE"            # COMPATIBLE | ADDITIVE | BREAKING | PENDING | NONE
+    latest_message_at: Optional[str] = None
+    last_consumed_at: Optional[str] = None
+    stale: bool = False
+    violation_count: int = 0
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def build_topic_state(
+    topic: dict,
+    registry: dict,
+    groups: dict[str, dict],
+    rule_topic_violations: dict[str, int],
+    now: Optional[datetime] = None,
+    settings: Optional[StalenessSettings] = None,
+) -> TopicState:
+    """Derive a single topic's governance row from fixture inputs."""
+    settings = settings or StalenessSettings()
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+
+    name = topic["name"]
+    ts = TopicState(name=name)
+    ts.owner = topic.get("owner") or "unknown"
+    ts.tags = list(topic.get("tags", []))
+    ts.partitions = int(topic.get("partitions", 1))
+    ts.replication_factor = int(topic.get("replication_factor", 1))
+
+    # schema state from registry subject
+    subject = topic.get("schema_subject")
+    ts.schema_subject = subject
+    versions = registry.get("subjects", {}).get(subject, []) if subject else []
+    if versions:
+        latest = versions[-1]
+        ts.schema_version = latest.get("version")
+        compat = latest.get("compatibility")
+        ts.schema_state = {"COMPATIBLE": "COMPATIBLE", "BACKWARD": "COMPATIBLE",
+                           "ADDITIVE": "ADDITIVE", "BREAKING": "BREAKING",
+                           "NONE": "NONE"}.get(compat, "COMPATIBLE") if compat else "COMPATIBLE"
+
+    # message + consumer timestamps
+    latest_msg = _parse_dt(topic.get("latest_message_at"))
+    ts.latest_message_at = latest_msg.isoformat() if latest_msg else None
+
+    group = groups.get(name) or {}
+    last_consumed = _parse_dt(group.get("last_consumed_at"))
+    ts.last_consumed_at = last_consumed.isoformat() if last_consumed else None
+
+    # staleness
+    if group is not None and last_consumed is not None:
+        consumed_delta = now - last_consumed
+        ts.stale = consumed_delta.total_seconds() > settings.consumer_grace_seconds
+    else:
+        # No consumer group known for the topic.
+        ts.stale = settings.no_consumer_since_epoch
+        if not ts.stale and latest_msg is not None:
+            produced_delta = now - latest_msg
+            ts.stale = produced_delta.total_seconds() > settings.producer_grace_seconds
+
+    ts.violation_count = int(rule_topic_violations.get(name, 0))
+    return ts
+
+
+# ---------------------------------------------------------------------------
+# Top-level report
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class GovernanceReport:
+    generated_at: str = field(default_factory=now_utc_iso)
+    total_topics: int = 0
+    topics: list[TopicState] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "generated_at": self.generated_at,
+            "total_topics": self.total_topics,
+            "topics": [t.to_dict() for t in self.topics],
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), indent=2, ensure_ascii=False)
+
+
+def build_governance_report(
+    topics_fixture: str | Path | list,
+    registry_fixture: Optional[str | Path | list] = None,
+    groups_fixture: Optional[str | Path | list] = None,
+    rule_violations: Optional[list] = None,
+    now: Optional[datetime] = None,
+) -> GovernanceReport:
+    """Build a full governance report from fixtures (plus optional violations)."""
+    topics = topics_fixture if isinstance(topics_fixture, list) else _read_json(topics_fixture)
+    if isinstance(topics, dict):
+        topics = topics.get("topics", [])
+
+    registry = {}
+    if registry_fixture:
+        registry = registry_fixture if isinstance(registry_fixture, dict) else _read_json(registry_fixture)
+
+    raw_groups = {}
+    if groups_fixture:
+        raw_groups = groups_fixture if isinstance(groups_fixture, dict) else _read_json(groups_fixture)
+    groups = raw_groups.get("groups") if isinstance(raw_groups, dict) and "groups" in raw_groups else raw_groups
+    if isinstance(groups, list):
+        groups = {g.get("topic", g.get("group")): g for g in groups}
+
+    # violation counts per topic
+    counts: dict[str, int] = {}
+    for vio in rule_violations or []:
+        topic = vio.get("topic") if isinstance(vio, dict) else getattr(vio, "topic", None)
+        if topic:
+            counts[topic] = counts.get(topic, 0) + 1
+
+    now = now or datetime.now(timezone.utc)
+    states = [
+        build_topic_state(t, registry, groups, counts, now=now)
+        for t in topics
+    ]
+    return GovernanceReport(total_topics=len(states), topics=states)
+
+
+# ---------------------------------------------------------------------------
+# CSV export
+# ---------------------------------------------------------------------------
+
+
+def report_to_csv(report: GovernanceReport) -> str:
+    import csv
+    import io
+
+    buf = io.StringIO()
+    cols = [
+        "name", "owner", "tags", "partitions", "replication_factor",
+        "schema_subject", "schema_version", "schema_state",
+        "latest_message_at", "last_consumed_at", "stale", "violation_count",
+    ]
+    writer = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
+    writer.writeheader()
+    for t in report.topics:
+        row = t.to_dict()
+        row["tags"] = "|".join(t.tags)
+        writer.writerow(row)
+    return buf.getvalue()

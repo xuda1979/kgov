@@ -4,6 +4,7 @@
       {
         "id": 1,
         "version": 1,
+        "compatibility": "BACKWARD",
         "schema": {
           "type": "record",
           "name": "Payment",
@@ -20,6 +21,7 @@
       {
         "id": 2,
         "version": 2,
+        "compatibility": "BACKWARD",
         "schema": {
           "type": "record",
           "name": "Payment",
@@ -31,6 +33,35 @@
             {"name": "status", "type": "string"},
             {"name": "fee_cents", "type": ["null", "long"], "default": null},
             {"name": "created_at", "type": ["null", "string"], "default": null}
+          ]
+        }
+      }
+    ],
+    "orders-value": [
+      {
+        "id": 1,
+        "version": 1,
+        "compatibility": "BACKWARD",
+        "schema": {
+          "type": "record",
+          "name": "Order",
+          "namespace": "com.acme",
+          "fields": [
+            {"name": "order_id", "type": "string"},
+            {"name": "total_cents", "type": "long"}
+          ]
+        }
+      },
+      {
+        "id": 2,
+        "version": 2,
+        "compatibility": "BREAKING",
+        "schema": {
+          "type": "record",
+          "name": "Order",
+          "namespace": "com.acme",
+          "fields": [
+            {"name": "order_id", "type": "string"}
           ]
         }
       }
