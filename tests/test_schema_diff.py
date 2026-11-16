@@ -245,6 +245,58 @@ def test_avro_enum_junk_symbols_tolerated():
     assert "GREEN" in messages
 
 
+def test_avro_unhashable_type_token_tolerated():
+    """A dict-node `type` token that is itself a dict (unhashable) must not
+    crash type-name/priority lookups; the diff classifies honestly as
+    Breaking instead of raising TypeError on set membership or in."""
+
+    # dict type token reached via the one-str-one-structured assignability path
+    for tok in ({"junk": 1}, ["null", {"type": {"x": 1}}]):
+        old = {"type": "record", "name": "A", "fields": [{"name": "v", "type": "string"}]}
+        new = {"type": "record", "name": "A", "fields": [{"name": "v", "type": {"type": tok}}]}
+        rep = diff_avro(_schema(old), _schema(new))
+        assert rep.kind == CompatibilityKind.BREAKING
+
+    # dict type token reached via the top-level `ta != tb` priority branch
+    rep2 = diff_avro(_schema({"type": {"a": 1}, "x": 1}), _schema({"type": {"b": 2}, "x": 2}))
+    assert rep2.kind == CompatibilityKind.BREAKING
+
+
+def test_avro_bare_junk_fields_tolerated():
+    """A record whose `fields` value is bare non-list junk (int/float/bool)
+    must not crash on iteration; no fields are readable so the diff degrades
+    to the type-level comparison."""
+    old = {"type": "record", "name": "A", "fields": [
+        {"name": "id", "type": "long"},
+        {"name": "v", "type": "string"},
+    ]}
+    for junk in (42, 3.5, True):
+        new = {"type": "record", "name": "A", "fields": junk}
+        rep = diff_avro(_schema(old), _schema(new))
+        assert rep.kind == CompatibilityKind.BREAKING
+
+
+def test_avro_bare_junk_enum_symbols_tolerated():
+    """An enum whose `symbols` value is bare non-list junk (int/float/bool)
+    must not crash on iteration; no symbols are readable."""
+    old = {"type": "enum", "name": "C", "symbols": ["RED", "GREEN"]}
+    for junk in (42, 3.5, True):
+        new = {"type": "enum", "name": "C", "symbols": junk}
+        rep = diff_avro(_schema(old), _schema(new))
+        assert rep.kind == CompatibilityKind.BREAKING  # RED/GREEN removed
+
+
+def test_diff_schemas_dict_type_token_tolerated():
+    """parse_schema must not crash on an unhashable dict type token during
+    format detection (previously dict key lookup in _PRIMITIVE_PRIORITY); the
+    dict token parses as avro and the diff classifies as Breaking."""
+    rep = diff_schemas(
+        json.dumps({"type": "record", "name": "A", "fields": []}),
+        json.dumps({"type": {"junk": 1}}),
+    )
+    assert rep.kind == CompatibilityKind.BREAKING
+
+
 def test_json_required_junk_tolerated():
     """A JSON Schema `required` array containing non-string junk must not
     crash on set membership (unhashable entries)."""

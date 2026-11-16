@@ -108,10 +108,10 @@ def parse_schema(text: Any, format: Optional[str] = None) -> tuple[str, Any]:
         t = obj.get("type")
         if isinstance(t, list):
             return SchemaFormat.AVRO, obj
-        if t in _PRIMITIVE_PRIORITY:
+        if isinstance(t, str) and t in _PRIMITIVE_PRIORITY:
             # "-record" style AVRO also valid: "string"
             return SchemaFormat.AVRO, obj
-        if t in ("record", "enum", "fixed", "array", "map", "error"):
+        if isinstance(t, str) and t in ("record", "enum", "fixed", "array", "map", "error"):
             return SchemaFormat.AVRO, obj
         if obj.get("properties") is not None or obj.get("$id"):
             return SchemaFormat.JSON, obj
@@ -145,9 +145,12 @@ def _type_names(node: Any) -> set:
             out |= _type_names(b)
         return out
     if isinstance(node, dict):
-        if isinstance(node.get("type"), list):
-            return _type_names(node["type"])
-        return {node.get("type") or "record"}
+        t = node.get("type")
+        if isinstance(t, list):
+            return _type_names(t)
+        # junk type tokens (dicts, ...) are unhashable in set membership; only
+        # a string token names a type (a dict without one is a record ref)
+        return {t} if isinstance(t, str) else {"record"}
     return set()
 
 
@@ -278,7 +281,8 @@ def _avro_diff(a: Any, b: Any, path: str = "", results: Optional[list] = None) -
 
     if ta != tb:
         # different avro type tokens
-        if ta in _PRIMITIVE_PRIORITY and tb in _PRIMITIVE_PRIORITY:
+        if (isinstance(ta, str) and isinstance(tb, str)
+                and ta in _PRIMITIVE_PRIORITY and tb in _PRIMITIVE_PRIORITY):
             if _PRIMITIVE_PRIORITY[tb] < _PRIMITIVE_PRIORITY[ta]:
                 add(CompatibilityKind.BREAKING, path,
                     f"type narrowed: `{ta}` → `{tb}`")
@@ -292,13 +296,16 @@ def _avro_diff(a: Any, b: Any, path: str = "", results: Optional[list] = None) -
 
     # --- same type token ---
     if ta in ("record", "error"):
-        # a malformed `fields` list may contain junk entries (strings, dicts
-        # without a string name, ...) — keep only usable field mappings so the
-        # diff tolerates bad input instead of crashing on f["name"]
+        # a malformed `fields` value may be junk (int/float/bool/str/dict
+        # instead of a list of field mappings) — only a list describes fields,
+        # and only usable field mappings are kept so the diff tolerates bad
+        # input rather than crashing on iteration or f["name"]
         old_fields = [f for f in (a.get("fields") or [])
-                      if isinstance(f, dict) and isinstance(f.get("name"), str)]
+                      if isinstance(f, dict) and isinstance(f.get("name"), str)] \
+            if isinstance(a.get("fields"), list) else []
         new_fields = [f for f in (b.get("fields") or [])
-                      if isinstance(f, dict) and isinstance(f.get("name"), str)]
+                      if isinstance(f, dict) and isinstance(f.get("name"), str)] \
+            if isinstance(b.get("fields"), list) else []
         od = {f["name"]: f for f in old_fields}
         nd = {f["name"]: f for f in new_fields}
 
@@ -331,10 +338,13 @@ def _avro_diff(a: Any, b: Any, path: str = "", results: Optional[list] = None) -
                     f"required field added without default: `{fb['name']}`")
 
     elif ta == "enum":
-        # symbols must be strings; junk entries (dicts, lists) would be
-        # unhashable in set arithmetic — keep only string symbols
-        old_syms = {s for s in (a.get("symbols") or []) if isinstance(s, str)}
-        new_syms = {s for s in (b.get("symbols") or []) if isinstance(s, str)}
+        # a malformed `symbols` value may be junk (int/float/bool/... instead
+        # of a list); symbols must be strings — junk entries (dicts, lists)
+        # would be unhashable in set arithmetic — keep only string symbols
+        old_syms = {s for s in (a.get("symbols") or []) if isinstance(s, str)} \
+            if isinstance(a.get("symbols"), list) else set()
+        new_syms = {s for s in (b.get("symbols") or []) if isinstance(s, str)} \
+            if isinstance(b.get("symbols"), list) else set()
         for s in old_syms - new_syms:
             add(CompatibilityKind.BREAKING, _join(path, s),
                 f"enum symbol removed: `{s}`")
