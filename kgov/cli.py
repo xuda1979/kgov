@@ -76,6 +76,8 @@ def _load_json_or_exit(path: str):
         return json.loads(data)
     except FileNotFoundError as exc:
         raise CliError(f"file not found: {path}") from exc
+    except IsADirectoryError as exc:
+        raise CliError(f"not a file: {path}") from exc
     except json.JSONDecodeError as exc:
         raise CliError(f"invalid JSON in {path}: {exc}") from exc
 
@@ -183,7 +185,7 @@ def _validate(rs, messages_path: Optional[str], broker_url: Optional[str], topic
               registry_url: Optional[str] = None):
     """Produce a violation list from messages/broker, or None if no source."""
     if messages_path:
-        if not Path(messages_path).exists():
+        if not Path(messages_path).is_file():
             raise CliError(f"--messages file missing: {messages_path}")
         return validate_fixture_file(rs, messages_path)
     if broker_url or topic:
@@ -217,7 +219,7 @@ def _validate(rs, messages_path: Optional[str], broker_url: Optional[str], topic
 
 
 def cmd_check(args) -> int:
-    if not args.config or not Path(args.config).exists():
+    if not args.config or not Path(args.config).is_file():
         raise CliError("check requires --config <rules.yaml> (file must exist)")
     try:
         rs = load_rules_file(args.config)
@@ -345,19 +347,19 @@ def cmd_registry(args) -> int:
 
 
 def cmd_report(args) -> int:
-    if not args.topics or not Path(args.topics).exists():
+    if not args.topics or not Path(args.topics).is_file():
         raise CliError("report requires --topics <topics.json>")
     registry = args.registry
     groups = args.groups
     for label, path in (("--registry", registry), ("--groups", groups)):
-        if path and not Path(path).exists():
+        if path and not Path(path).is_file():
             raise CliError(f"{label} file missing: {path}")
     violations: list = []
 
     if args.rules and args.messages:
-        if not Path(args.messages).exists():
+        if not Path(args.messages).is_file():
             raise CliError(f"--messages file missing: {args.messages}")
-        if not Path(args.rules).exists():
+        if not Path(args.rules).is_file():
             raise CliError(f"--rules file missing: {args.rules}")
         try:
             rs = load_rules_file(args.rules)

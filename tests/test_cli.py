@@ -179,6 +179,31 @@ def test_report_missing_registry_or_groups_exit_3(capsys):
     assert "--groups file missing" in capsys.readouterr().err
 
 
+def test_report_check_directory_as_file_exit_3(tmp_path, capsys):
+    """A directory passed in place of a file must fail cleanly (exit 3),
+    not crash with IsADirectoryError."""
+    adir = tmp_path / "adir"
+    adir.mkdir()
+    topics = str(FIXTURES / "topics" / "topics.json")
+
+    code = main(["report", "--topics", str(adir)])
+    assert code == 3
+    assert "report requires --topics" in capsys.readouterr().err
+
+    rules = FIXTURES / "rules" / "rules_scale.yaml"
+    code = main(["check", "--config", str(adir), "--messages", str(FIXTURES / "messages" / "payments_messages.json")])
+    assert code == 3
+    assert "--config" in capsys.readouterr().err
+
+    code = main(["report", "--topics", topics, "--registry", str(adir)])
+    assert code == 3
+    assert "--registry file missing" in capsys.readouterr().err
+
+    code = main(["schema-diff", "--before", str(adir), "--after", str(FIXTURES / "schemas" / "v1.json")])
+    assert code == 3
+    assert "not a file" in capsys.readouterr().err
+
+
 # ---------------------------------------------------------------------------
 # export
 # ---------------------------------------------------------------------------
