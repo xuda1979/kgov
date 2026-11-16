@@ -571,3 +571,60 @@ def test_registry_cli_single_subject(server) -> None:
 def test_registry_cli_unreachable(capsys) -> None:
     code = main(["registry", "--registry-url", "http://127.0.0.1:1"])
     assert code == 3
+
+
+# ---------------------------------------------------------------------------
+# junk argv / unreadable paths (CLI entry surface)
+# ---------------------------------------------------------------------------
+
+
+def test_main_junk_argv_no_traceback(capsys):
+    """Non-list/tuple argv containers (an int, a string, bytes, a dict, ...)
+    must not crash argparse with a raw TypeError on list(args); the CLI exits
+    with a usage code instead."""
+    for junk in (42, "schema-diff", b"schema-diff", {"a": 1}, 2.5, None):
+        code = main(junk)  # type: ignore[arg-type]
+        assert code == 2
+        assert "Traceback" not in capsys.readouterr().err
+
+
+def test_main_non_str_argv_entries_tolerated(capsys):
+    """Non-str entries inside argv (bytes, ints, lists, dicts, ...) must not
+    crash argparse on arg_string[0]/path construction; they are dropped and
+    the remaining args dispatch normally (usage error if now incomplete)."""
+    for argv in (
+        ["schema-diff", "--before", b"x", "--after", 2],
+        ["schema-diff", "--before", 1, "--after", 2],
+        ["report", "--topics", None],
+        ["check", "--config", ["a"]],
+        ["registry", "--registry-url", True],
+        [("schema", "diff")],
+    ):
+        code = main(argv)  # type: ignore[list-item]
+        assert code in (0, 1, 2, 3)
+        assert "Traceback" not in capsys.readouterr().err
+
+
+def test_unreadable_fixture_files_exit_3(tmp_path, capsys):
+    """A fixture file that passes is_file() but cannot be read (permission
+    denied) must exit 3 with a clean error, not leak a raw PermissionError."""
+    fixture = tmp_path / "noperm.json"
+    fixture.write_text(json.dumps({"topics": [{"name": "t"}]}), encoding="utf-8")
+    fixture.chmod(0)
+    try:
+        code = main(["report", "--topics", str(fixture)])
+        assert code == 3
+        assert "Traceback" not in capsys.readouterr().err
+
+        code = main(["schema-diff", "--before", str(fixture), "--after", str(fixture)])
+        assert code == 3
+        assert "Traceback" not in capsys.readouterr().err
+    finally:
+        fixture.chmod(0o644)
+
+
+def test_nul_byte_path_exit_3(capsys) -> None:
+    """A schema-diff path containing an embedded NUL byte must exit 3 with a
+    clean error, not leak a raw ValueError from read_text."""
+    code = main(["schema-diff", "--before", "a\x00b", "--after", "c.json"])
+    assert code == 3

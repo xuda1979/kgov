@@ -89,6 +89,11 @@ def _load_json_or_exit(path: str):
         raise CliError(f"not valid UTF-8: {path}") from exc
     except json.JSONDecodeError as exc:
         raise CliError(f"invalid JSON in {path}: {exc}") from exc
+    except (OSError, ValueError) as exc:
+        # unreadable files (permission denied, ...) and malformed paths
+        # (embedded NUL bytes) leak out of read_text; surface them as clean
+        # runtime errors instead of raw tracebacks
+        raise CliError(f"cannot read {path!r}: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -556,6 +561,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[list] = None) -> int:
+    if argv is not None:
+        # A CLI argv must be a list/tuple of argument strings; junk containers
+        # (an int, a string, bytes, a dict, ...) or non-str entries inside the
+        # list would crash argparse with a raw TypeError (list(args) on the
+        # container, arg_string[0] on a non-str entry). Reject or drop them
+        # up front so dispatch always exits cleanly with a usage code.
+        if not isinstance(argv, (list, tuple)):
+            print("kgov: usage: argv must be a list of argument strings", file=sys.stderr)
+            return EXIT_USAGE
+        argv = [a for a in argv if isinstance(a, str)]
     parser = build_parser()
     try:
         args = parser.parse_args(argv)

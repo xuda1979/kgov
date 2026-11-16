@@ -111,6 +111,11 @@ def load_rules_file(path: str | Path) -> RuleSet:
         text = Path(path).read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
         raise RulesConfigError(f"{path}: file is not valid UTF-8") from exc
+    except (OSError, ValueError) as exc:
+        # unreadable files (permission denied, ...) and malformed paths
+        # (embedded NUL bytes) leak out of read_text; surface them as clean
+        # typed errors instead of raw tracebacks
+        raise RulesConfigError(f"cannot read rules file {path!r}: {exc}") from exc
     return load_rules_yaml(text)
 
 def build_ruleset(data: Any) -> RuleSet:
@@ -423,6 +428,11 @@ def iter_messages_from_json(path: str | Path, topic: Optional[str] = None) -> It
         raise RulesConfigError(f"{path}: file is not valid UTF-8") from exc
     except json.JSONDecodeError as exc:
         raise RulesConfigError(f"invalid message fixture JSON: {exc}") from exc
+    except (OSError, ValueError) as exc:
+        # unreadable files (permission denied, ...) and malformed paths
+        # (embedded NUL bytes) leak out of read_text; surface them as clean
+        # typed errors instead of raw tracebacks
+        raise RulesConfigError(f"cannot read message fixture {path!r}: {exc}") from exc
 
     if isinstance(root, list):
         partition = 0

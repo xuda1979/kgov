@@ -43,6 +43,11 @@ def _read_json(path: str | Path) -> Any:
         data = Path(path).read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
         raise ValueError(f"{path}: fixture is not valid UTF-8") from exc
+    except (OSError, ValueError) as exc:
+        # unreadable files (permission denied, ...) and malformed paths
+        # (embedded NUL bytes) leak out of read_text; surface them as clean
+        # errors instead of raw tracebacks
+        raise ValueError(f"cannot read fixture {path!r}: {exc}") from exc
     try:
         return json.loads(data)
     except json.JSONDecodeError as exc:

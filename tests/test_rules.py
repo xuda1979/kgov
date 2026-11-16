@@ -305,3 +305,14 @@ def test_fixture_validation_yields_expected_violations():
 
     # message 0 is clean
     assert 0 not in by_offset
+
+
+def test_nul_byte_path_raises_rules_config_error():
+    """A path containing an embedded NUL byte must raise a clean
+    RulesConfigError from read paths, not a raw ValueError from read_text."""
+    for call in (
+        lambda: load_rules_file("a\x00b"),
+        lambda: list(iter_messages_from_json("a\x00b", "payments")),
+    ):
+        with pytest.raises(RulesConfigError, match="cannot read"):
+            call()
