@@ -183,6 +183,24 @@ def test_fixture_iter_messages():
     assert msgs[3].offset == 3
 
 
+@pytest.mark.parametrize("body", ["null", "42", '"a string"'])
+def test_fixture_scalar_root_rejected(tmp_path, body):
+    """A fixture whose root is a JSON null/scalar must raise a clean
+    RulesConfigError, not crash later on .get() with AttributeError."""
+    path = tmp_path / "msgs.json"
+    path.write_text(body, encoding="utf-8")
+    with pytest.raises(RulesConfigError, match="JSON object or list"):
+        list(iter_messages_from_json(path))
+
+
+def test_fixture_messages_not_a_list_rejected(tmp_path):
+    """An object fixture whose 'messages' key is not a list is malformed."""
+    path = tmp_path / "msgs.json"
+    path.write_text(json.dumps({"messages": {"value": {"x": 1}}}), encoding="utf-8")
+    with pytest.raises(RulesConfigError, match="must be a list"):
+        list(iter_messages_from_json(path))
+
+
 def test_fixture_validation_yields_expected_violations():
     """AC #2 — five sample dirty messages are correctly reported with offsets."""
     rs = load_rules_file(FIXTURES / "rules" / "rules_scale.yaml")

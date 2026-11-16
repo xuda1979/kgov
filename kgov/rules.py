@@ -410,7 +410,15 @@ def iter_messages_from_json(path: str | Path, topic: Optional[str] = None) -> It
             )
         return
 
+    if not isinstance(root, dict):
+        raise RulesConfigError(
+            f"message fixture must be a JSON object or list, "
+            f"got {type(root).__name__}"
+        )
+
     messages = root.get("messages", [])
+    if not isinstance(messages, list):
+        raise RulesConfigError("message fixture 'messages' must be a list")
     default_topic = root.get("topic", topic or "unknown")
     default_partition = root.get("partition", 0)
     for i, item in enumerate(messages):

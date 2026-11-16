@@ -129,6 +129,17 @@ def test_check_missing_config(capsys):
     assert code == 3
 
 
+def test_check_scalar_messages_fixture_exit_3(tmp_path, capsys):
+    """A messages fixture whose JSON root is null/scalar must fail cleanly
+    (exit 3), not crash with AttributeError."""
+    bad = tmp_path / "msgs.json"
+    bad.write_text("null", encoding="utf-8")
+    rules = FIXTURES / "rules" / "rules_scale.yaml"
+    code = main(["check", "--config", str(rules), "--messages", str(bad)])
+    assert code == 3
+    assert "bad message fixture" in capsys.readouterr().err
+
+
 def test_check_broker_scan_failure_exit_3(capsys, monkeypatch):
     """A broker scan that fails (unreachable cluster) must exit 3 with a clean
     error — never pass the gate with zero violations."""
