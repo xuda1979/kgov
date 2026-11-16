@@ -749,3 +749,38 @@ def test_cmd_handlers_tolerate_missing_attributes():
                          messages=msgs, broker=None, topic=None)) == 1
     # Missing registry/groups behave as None (tolerated) -> report builds.
     assert cmd_report(ns(topics=topics)) == 0
+
+
+def test_cmd_topics_tolerates_junk_bootstrap_and_options(monkeypatch, capsys):
+    """cmd_topics is the one public handler Fixes 22/23 did not probe, and this
+    venv genuinely ships confluent-kafka, so a truthy junk --bootstrap
+    (list/dict/int/bytes) would previously pass the `if not bootstrap` gate
+    and reach a live AdminClient network call. A str-only gate sends junk
+    bootstrap to a clean CliError before any import/network; a valid str
+    bootstrap still reaches list_topics (stubbed offline, no hang)."""
+    import argparse
+
+    from kgov.cli import CliError, cmd_topics
+
+    monkeypatch.setattr("kgov.broker.list_topics",
+                        lambda bootstrap, timeout=10.0: [])
+
+    def ns(**kw):
+        return argparse.Namespace(**kw)
+
+    for junk in (None, "", 0, False, 42, ["x"], {"a": 1}, b"host", 3.5):
+        with pytest.raises(CliError):
+            cmd_topics(ns(bootstrap=junk))
+    with pytest.raises(CliError):
+        cmd_topics(ns())  # missing bootstrap attribute -> gate, not AttributeError
+
+    # Valid str bootstrap: no hang, no error, exit 0 (wire stubbed). A junk
+    # timeout is tolerated (passes through to list_topics, which coerces).
+    assert cmd_topics(ns(bootstrap="127.0.0.1:9092")) == 0
+    assert cmd_topics(ns(bootstrap="127.0.0.1:9092", timeout="abc")) == 0
+    # A truthy junk output value takes the force-write path and raises the
+    # clean CliError (same design as cmd_check); falsy junk drops to stdout.
+    with pytest.raises(CliError):
+        cmd_topics(ns(bootstrap="127.0.0.1:9092", output=["x"]))
+    assert cmd_topics(ns(bootstrap="127.0.0.1:9092", output=0)) == 0
+    capsys.readouterr()

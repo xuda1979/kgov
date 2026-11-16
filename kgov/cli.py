@@ -325,7 +325,7 @@ def cmd_check(args) -> int:
 
 def cmd_topics(args) -> int:
     bootstrap = getattr(args, "bootstrap", None)
-    if not bootstrap:
+    if not isinstance(bootstrap, str) or not bootstrap:
         raise CliError("topics requires --bootstrap <host:port>")
     try:
         from .broker import list_topics
