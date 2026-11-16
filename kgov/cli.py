@@ -225,7 +225,9 @@ def cmd_check(args) -> int:
         raise CliError(f"bad rules config: {exc}") from exc
 
     # A CI gate must never silently pass because no messages were supplied.
-    if not args.messages and not args.broker and not args.topic:
+    if args.topic and not args.broker:
+        raise CliError("--topic requires --broker <bootstrap.servers>")
+    if not args.messages and not (args.broker and args.topic):
         raise CliError(
             "check needs a data source: pass --messages <file> or "
             "--broker <bootstrap> --topic <name>"

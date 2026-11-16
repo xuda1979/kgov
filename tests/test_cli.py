@@ -116,6 +116,14 @@ def test_check_requires_data_source(capsys):
     assert code == 3
 
 
+def test_check_topic_without_broker_exit_3(capsys):
+    """--topic is not a data source by itself; it must pair with --broker."""
+    rules = FIXTURES / "rules" / "rules_scale.yaml"
+    code = main(["check", "--config", str(rules), "--topic", "payments"])
+    assert code == 3
+    assert "requires --broker" in capsys.readouterr().err
+
+
 def test_check_missing_config(capsys):
     code = main(["check", "--config", "/no/rules.yaml", "--messages", "x.json"])
     assert code == 3
