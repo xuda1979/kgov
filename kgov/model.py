@@ -102,8 +102,20 @@ class SchemaDiffReport:
         if not self.results:
             lines.append("_No structural changes detected._")
             return "\n".join(lines)
+        icon_map = {"Breaking": "-", "Non-Breaking": "~", "Additive": "+"}
         for r in self.results:
-            icon = {"Breaking": "-", "Non-Breaking": "~", "Additive": "+"}.get(r.get("kind"), "?")
-            path = r.get("path") or "(root)"
-            lines.append(f"- {icon} **{r['kind']}** `{path}` — {r['message']}")
+            # only mapping entries describe a change; junk (None, ints,
+            # strings, ...) would crash .get() below and is meaningless here
+            if not isinstance(r, dict):
+                continue
+            raw_kind = r.get("kind")
+            # only string kinds map to an icon; junk (lists, dicts, ...) is
+            # unhashable or meaningless — fall back to the unknown marker
+            kind = raw_kind if isinstance(raw_kind, str) else "?"
+            icon = icon_map.get(kind, "?")
+            raw_path = r.get("path")
+            path = raw_path if isinstance(raw_path, str) and raw_path else "(root)"
+            raw_message = r.get("message")
+            message = raw_message if isinstance(raw_message, str) else ""
+            lines.append(f"- {icon} **{kind}** `{path}` — {message}")
         return "\n".join(lines)

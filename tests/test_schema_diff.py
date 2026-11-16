@@ -447,3 +447,37 @@ def test_evolution_fixture_series(avro_series, json_series):
                 after = sub["compare"]["after"]["schema"]
                 rep = diff_schemas(before, after, subject=name)
                 assert rep.kind == expected[name], f"{name}: got {rep.kind}"
+
+
+def test_markdown_tolerates_junk_results_entries():
+    """Junk entries in ``SchemaDiffReport.results`` (None, scalars, non-dict
+    containers, missing/non-string keys) must not crash ``to_markdown`` —
+    the render loop only maps entries that look like ``{kind, path, message}``
+    strings and skips the rest."""
+    from kgov.model import SchemaDiffReport
+
+    rep = SchemaDiffReport(
+        format="avro",
+        subject="s",
+        before_version=1,
+        after_version=2,
+        results=[
+            None,
+            42,
+            "x",
+            {"kind": None},
+            {"path": "a"},
+            {"kind": ["Breaking"]},
+            {"kind": "Breaking", "path": "", "message": "removed"},
+            {"kind": "Non-Breaking", "path": "b", "message": "widened"},
+            {"kind": "Additive", "path": "c", "message": "added"},
+        ],
+    )
+    md = rep.to_markdown()
+    assert "- - **Breaking** `(root)` — removed" in md
+    assert "- ~ **Non-Breaking** `b` — widened" in md
+    assert "- + **Additive** `c` — added" in md
+    # junk dict entries (missing / non-string kind) fall back to the unknown
+    # marker instead of crashing: one per junk dict, keeping a valid string path
+    assert md.count("- ? **?** `(root)` —") == 2
+    assert md.count("- ? **?** `a` —") == 1
