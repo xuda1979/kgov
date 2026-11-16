@@ -212,6 +212,34 @@ def test_topic_non_string_schema_subject_ignored():
         assert payments.schema_state == "NONE"
 
 
+def test_registry_bare_list_ignored():
+    """A bare list passed directly as registry_fixture must be ignored (its
+    type hint accepts list as resolved data), not crash on Path(list)."""
+    rep = build_governance_report(
+        topics_fixture=[{"name": "orders", "schema_subject": "orders-value"}],
+        registry_fixture=[{"version": 1, "compatibility": "COMPATIBLE"}],
+        now=NOW,
+    )
+    orders = rep.topics[0]
+    assert orders.schema_state == "NONE"
+    assert orders.schema_version is None
+
+
+def test_groups_bare_list_no_crash():
+    """A bare list passed directly as groups_fixture must not crash on
+    Path(list); it is treated as list-form data (junk entries skipped, valid
+    mapping entries honored)."""
+    rep = build_governance_report(
+        topics_fixture=FIXTURES / "topics" / "topics.json",
+        groups_fixture=["not-a-dict", {"group": "orders", "last_consumed_at": "2026-01-01T00:00:00Z"}],
+        now=NOW,
+    )
+    orders = next(t for t in rep.topics if t.name == "orders")
+    assert orders.last_consumed_at == "2026-01-01T00:00:00+00:00"
+    payments = next(t for t in rep.topics if t.name == "payments")
+    assert payments.last_consumed_at is None
+
+
 def test_topics_fixture_non_list_raises_value_error(tmp_path):
     """A topics fixture that does not resolve to a list (e.g. null) must fail
     with a clean ValueError rather than a TypeError on iteration."""
