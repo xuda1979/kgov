@@ -185,6 +185,68 @@ def test_parse_schema_invalid_json():
         parse_schema("{not valid json")
 
 
+def test_avro_junk_fields_tolerated():
+    """A record whose `fields` list contains junk entries (strings, dicts
+    without a string name) must not crash on f[\"name\"] indexing."""
+    old = {"type": "record", "name": "A", "fields": ["garbage", {"type": "long"}, {"name": "id", "type": "long"}]}
+    new = {"type": "record", "name": "A", "fields": [42, {"name": "id", "type": "long"}, {"name": "email", "type": "string"}]}
+    rep = diff_avro(_schema(old), _schema(new))
+    findings = {(r["path"], r["kind"]) for r in rep.results}
+    # the junk entries were skipped and did not crash; the usable comparison
+    # (email added without a default) is still reported as Breaking
+    assert findings == {("email", CompatibilityKind.BREAKING)}
+
+
+def test_avro_enum_junk_symbols_tolerated():
+    """An enum whose `symbols` list contains unhashable junk (dicts/lists)
+    must not crash on set arithmetic."""
+    old = {"type": "enum", "name": "C", "symbols": ["RED", "GREEN", {"x": 1}]}
+    new = {"type": "enum", "name": "C", "symbols": ["RED", ["x", 1]]}
+    rep = diff_avro(_schema(old), _schema(new))
+    assert rep.kind == CompatibilityKind.BREAKING  # GREEN removed
+    messages = " ".join(r["message"] for r in rep.results)
+    assert "GREEN" in messages
+
+
+def test_json_required_junk_tolerated():
+    """A JSON Schema `required` array containing non-string junk must not
+    crash on set membership (unhashable entries)."""
+    old = {"$schema": "http://json-schema.org/draft-07/schema#",
+           "type": "object", "required": ["id", {"x": 1}], "properties": {"id": {"type": "integer"}}}
+    new = {"$schema": "http://json-schema.org/draft-07/schema#",
+           "type": "object", "required": ["id", {"x": 1}], "properties": {"id": {"type": "integer"}, "email": {"type": "string"}}}
+    rep = diff_json_schema(_schema(old), _schema(new))
+    assert rep.kind == CompatibilityKind.ADDITIVE
+    assert any(r["path"] == "email" for r in rep.results)
+
+
+def test_json_properties_list_tolerated():
+    """A JSON Schema whose `properties` value is a list (not a mapping) must
+    not crash on .items()."""
+    old = {"$schema": "http://json-schema.org/draft-07/schema#",
+           "type": "object", "properties": ["garbage", {"id": {}}]}
+    new = {"$schema": "http://json-schema.org/draft-07/schema#",
+           "type": "object", "properties": ["garbage"]}
+    rep = diff_json_schema(_schema(old), _schema(new))
+    # nothing usable to compare, but no crash
+    assert rep.kind in (CompatibilityKind.NON_BREAKING, CompatibilityKind.ADDITIVE)
+
+
+def test_json_junk_bounds_tolerated():
+    """Non-numeric bound values (string vs int) in minLength/minItems must not
+    crash on `>` between mismatched types; numeric tightening still works."""
+    old = {"$schema": "http://json-schema.org/draft-07/schema#", "type": "string", "minLength": "abc"}
+    new = {"$schema": "http://json-schema.org/draft-07/schema#", "type": "string", "minLength": 5}
+    rep = diff_json_schema(_schema(old), _schema(new))
+    assert rep.kind == CompatibilityKind.NON_BREAKING
+
+    old2 = {"$schema": "http://json-schema.org/draft-07/schema#", "type": "string", "minLength": 3}
+    new2 = {"$schema": "http://json-schema.org/draft-07/schema#", "type": "string", "minLength": 5}
+    rep2 = diff_json_schema(_schema(old2), _schema(new2))
+    messages = " ".join(r["message"] for r in rep2.results)
+    assert "tightened" in messages and "3" in messages and "5" in messages
+
+
 def test_diff_schemas_forwarding():
     old = {"type": "record", "name": "A", "fields": [{"name": "x", "type": "int"}]}
     new = {"type": "record", "name": "A", "fields": [{"name": "x", "type": "long"}]}

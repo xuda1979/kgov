@@ -282,8 +282,13 @@ def _avro_diff(a: Any, b: Any, path: str = "", results: Optional[list] = None) -
 
     # --- same type token ---
     if ta in ("record", "error"):
-        old_fields = a.get("fields", [])
-        new_fields = b.get("fields", [])
+        # a malformed `fields` list may contain junk entries (strings, dicts
+        # without a string name, ...) — keep only usable field mappings so the
+        # diff tolerates bad input instead of crashing on f["name"]
+        old_fields = [f for f in (a.get("fields") or [])
+                      if isinstance(f, dict) and isinstance(f.get("name"), str)]
+        new_fields = [f for f in (b.get("fields") or [])
+                      if isinstance(f, dict) and isinstance(f.get("name"), str)]
         od = {f["name"]: f for f in old_fields}
         nd = {f["name"]: f for f in new_fields}
 
@@ -316,8 +321,10 @@ def _avro_diff(a: Any, b: Any, path: str = "", results: Optional[list] = None) -
                     f"required field added without default: `{fb['name']}`")
 
     elif ta == "enum":
-        old_syms = set(a.get("symbols", []))
-        new_syms = set(b.get("symbols", []))
+        # symbols must be strings; junk entries (dicts, lists) would be
+        # unhashable in set arithmetic — keep only string symbols
+        old_syms = {s for s in (a.get("symbols") or []) if isinstance(s, str)}
+        new_syms = {s for s in (b.get("symbols") or []) if isinstance(s, str)}
         for s in old_syms - new_syms:
             add(CompatibilityKind.BREAKING, _join(path, s),
                 f"enum symbol removed: `{s}`")
@@ -457,7 +464,8 @@ def _js_diff(a: Any, b: Any, path: str = "", results: Optional[list] = None) -> 
             f"accepted types widened: {sorted(sa)} → {sorted(sb)}")
 
     # required arrays
-    ra, rb = set(a.get("required", [])), set(b.get("required", []))
+    ra = {p for p in (a.get("required") or []) if isinstance(p, str)}
+    rb = {p for p in (b.get("required") or []) if isinstance(p, str)}
     for prop in ra - rb:
         add(CompatibilityKind.ADDITIVE, _join(path, prop),
             f"property no longer required: `{prop}`")
@@ -466,8 +474,8 @@ def _js_diff(a: Any, b: Any, path: str = "", results: Optional[list] = None) -> 
             f"property now required: `{prop}`")
 
     # properties
-    pa = a.get("properties") or {}
-    pb = b.get("properties") or {}
+    pa = a.get("properties") if isinstance(a.get("properties"), dict) else {}
+    pb = b.get("properties") if isinstance(b.get("properties"), dict) else {}
     for k, av in pa.items():
         bv = pb.get(k)
         if bv is None:
@@ -515,20 +523,25 @@ def _js_diff(a: Any, b: Any, path: str = "", results: Optional[list] = None) -> 
             _js_diff(a.get(kw, True), b.get(kw, True), _join(path, kw), results)
 
     # format / minLength / max are Non-Breaking breadcrumbs unless tightened.
+    # Only numeric bounds are comparable; junk bounds (strings, lists, ...)
+    # must not crash on `<`/`>` between mismatched types.
+    def _is_number(v: Any) -> bool:
+        return isinstance(v, (int, float)) and not isinstance(v, bool)
+
     for kw in ("minLength", "minItems", "minimum"):
         av, bv = a.get(kw), b.get(kw)
-        if av is not None and bv is not None and bv > av:
+        if _is_number(av) and _is_number(bv) and bv > av:
             add(CompatibilityKind.NON_BREAKING, _join(path, kw),
                 f"lower bound tightened: {av} → {bv}")
-        if av is not None and bv is not None and bv < av:
+        if _is_number(av) and _is_number(bv) and bv < av:
             add(CompatibilityKind.ADDITIVE, _join(path, kw),
                 f"lower bound relaxed: {av} → {bv}")
     for kw in ("maxLength", "maxItems", "maximum"):
         av, bv = a.get(kw), b.get(kw)
-        if av is not None and bv is not None and bv < av:
+        if _is_number(av) and _is_number(bv) and bv < av:
             add(CompatibilityKind.NON_BREAKING, _join(path, kw),
                 f"upper bound tightened: {av} → {bv}")
-        if av is not None and bv is not None and bv > av:
+        if _is_number(av) and _is_number(bv) and bv > av:
             add(CompatibilityKind.ADDITIVE, _join(path, kw),
                 f"upper bound relaxed: {av} → {bv}")
 

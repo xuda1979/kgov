@@ -63,6 +63,37 @@ def test_schema_diff_missing_file(capsys):
     assert code == 3
 
 
+def test_schema_diff_junk_fixtures_exit_0(tmp_path):
+    """schema-diff must tolerate junk entries inside otherwise-valid schema
+    fixtures (string/object record fields, dict enum symbols, list
+    properties, non-string required, mismatched bound types) instead of
+    crashing with a traceback (exit 0)."""
+    cases = [
+        # avro: garbage record fields
+        ({"type": "record", "name": "A", "fields": ["x", {"type": "long"}, {"name": "id", "type": "long"}]},
+         {"type": "record", "name": "A", "fields": [42, {"name": "id", "type": "long"}]}),
+        # avro: unhashable enum symbols
+        ({"type": "enum", "name": "C", "symbols": ["RED", {"x": 1}]},
+         {"type": "enum", "name": "C", "symbols": [["RED"], "RED", "BLUE"]}),
+        # json: properties as a list + required with dicts
+        ({"$schema": "http://json-schema.org/draft-07/schema#", "type": "object",
+          "properties": ["x"], "required": [{"x": 1}, "id"]},
+         {"$schema": "http://json-schema.org/draft-07/schema#", "type": "object",
+          "properties": ["x"], "required": [{"x": 1}, "id"], "minLength": 5}),
+        # json: mismatched bound types
+        ({"$schema": "http://json-schema.org/draft-07/schema#", "type": "string", "minLength": "abc"},
+         {"$schema": "http://json-schema.org/draft-07/schema#", "type": "string", "minLength": 5}),
+    ]
+    for i, (before, after) in enumerate(cases):
+        b = tmp_path / f"before{i}.json"
+        a = tmp_path / f"after{i}.json"
+        b.write_text(json.dumps(before), encoding="utf-8")
+        a.write_text(json.dumps(after), encoding="utf-8")
+        code = main(["schema-diff", "--before", str(b), "--after", str(a)])
+        assert code == 0, f"case {i}: exit {code}"
+
+
+
 def test_schema_diff_compact_registry_ref(server) -> None:
     """Shorthand refs ``host:port/subject/version`` resolve against a registry."""
     ref1 = f"{server.base_url}/payments-value/1"
