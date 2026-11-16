@@ -440,10 +440,27 @@ def cmd_export(args) -> int:
         args.format = getattr(args, "schema_format", None)
         return cmd_schema_diff(args)
     if args.type in ("check", "violations"):
+        _require_export_format(args, {"json"})
         return cmd_check(args)
     if args.type == "report":
+        _require_export_format(args, {"json", "csv"})
         return cmd_report(args)
     raise CliError(f"unknown export type: {args.type}")
+
+
+def _require_export_format(args, supported: set[str]) -> None:
+    """Reject an export --format the target command cannot render.
+
+    ``check`` only renders JSON and ``report`` only JSON/CSV; asking for
+    anything else (e.g. ``--format markdown``) would otherwise be silently
+    ignored and emit the wrong payload with exit 0.
+    """
+    export_fmt = getattr(args, "format", "json")
+    if export_fmt not in supported:
+        raise CliError(
+            f"{args.type} export supports --format {'|'.join(sorted(supported))}, "
+            f"got {export_fmt!r}"
+        )
 
 
 # ---------------------------------------------------------------------------

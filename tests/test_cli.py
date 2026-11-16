@@ -280,6 +280,25 @@ def test_export_schema_diff_csv_unsupported_exit_3(capsys):
     assert "json|markdown" in capsys.readouterr().err
 
 
+def test_export_report_markdown_unsupported_exit_3(capsys):
+    """report only renders JSON/CSV; a markdown export must not silently emit
+    JSON with exit 0."""
+    code = main(["export", "--type", "report", "--format", "markdown",
+                 "--topics", str(FIXTURES / "topics" / "topics.json")])
+    assert code == 3
+    assert "csv|json" in capsys.readouterr().err
+
+
+def test_export_check_csv_unsupported_exit_3(capsys):
+    """check only renders JSON; a csv export must not silently ignore the
+    requested format."""
+    code = main(["export", "--type", "check", "--format", "csv",
+                 "--config", str(FIXTURES / "rules" / "rules_scale.yaml"),
+                 "--messages", str(FIXTURES / "messages" / "payments_messages.json")])
+    assert code == 3
+    assert "json" in capsys.readouterr().err
+
+
 # ---------------------------------------------------------------------------
 # registry (live mock server through the CLI)
 # ---------------------------------------------------------------------------
