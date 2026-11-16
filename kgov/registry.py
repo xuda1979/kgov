@@ -17,6 +17,7 @@ as a registry fixture (``{"subjects": {...}}``).
 
 from __future__ import annotations
 
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -68,6 +69,10 @@ class SchemaRegistryClient:
             raise RegistryError(f"registry {exc.code} for {path}: {body}") from exc
         except urllib.error.URLError as exc:
             raise RegistryError(f"cannot reach {self.base_url}: {exc.reason}") from exc
+        except http.client.HTTPException as exc:
+            # RemoteDisconnected / IncompleteRead / BadStatusLine from a
+            # server that died mid-response are not ValueErrors
+            raise RegistryError(f"registry dropped the connection for {path}: {exc}") from exc
         except UnicodeDecodeError as exc:
             raise RegistryError(f"registry returned invalid UTF-8 for {path}: {exc}") from exc
         except json.JSONDecodeError as exc:

@@ -52,6 +52,18 @@ def _version_entries(versions: Any) -> list[dict]:
     return [v for v in versions if isinstance(v, dict)]
 
 
+def _wire_schema(schema_value: Any) -> str:
+    """Best-effort Confluent-wire schema serialization.
+
+    Junk values JSON cannot encode (bytes, sets, objects) fall back to their
+    string form so a handler thread never dies mid-response.
+    """
+    try:
+        return json.dumps(schema_value, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(schema_value)
+
+
 _JSON_HEADERS = {
     "Content-Type": "application/vnd.schemaregistry.v1+json, application/json",
     "Access-Control-Allow-Origin": "*",
@@ -148,7 +160,7 @@ class RegistryHandler(BaseHTTPRequestHandler):
                 if schema is None:
                     self._error(404, f"Schema {schema_id} not found.", 40403)
                     return
-                self._reply(200, {"schema": json.dumps(schema, ensure_ascii=False)})
+                self._reply(200, {"schema": _wire_schema(schema)})
                 return
 
         if head == "mode":
@@ -245,7 +257,9 @@ class MockRegistry:
         existing.extend(_version_entries(list(versions)))
 
     def list_subjects(self) -> list[str]:
-        return sorted(self._fixture.keys())
+        # key=str keeps heterogeneous (int/str) fixture keys sortable instead
+        # of raising TypeError on the wire
+        return sorted(self._fixture.keys(), key=str)
 
     def versions(self, subject: str) -> Optional[list[int]]:
         versions = self._fixture.get(subject)
@@ -268,12 +282,17 @@ class MockRegistry:
             )
             if info is None:
                 return None
+        compatibility = info.get("compatibility")
+        if not isinstance(compatibility, str):
+            # junk-typed compatibility (set, bytes, dict, ...) would crash
+            # json.dumps in the reply envelope; coerce to a safe string
+            compatibility = None if compatibility is None else str(compatibility)
         return {
             "subject": subject,
             "version": _as_int(info.get("version"), len(versions)),
             "id": _as_int(info["id"], None) if "id" in info else None,
-            "compatibility": info.get("compatibility"),
-            "schema": json.dumps(info.get("schema"), ensure_ascii=False),
+            "compatibility": compatibility,
+            "schema": _wire_schema(info.get("schema")),
         }
 
     def compatibility_level(self, subject: Optional[str]) -> Optional[str]:

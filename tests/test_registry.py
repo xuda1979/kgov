@@ -243,6 +243,30 @@ def test_get_non_utf8_body_raises_registry_error(monkeypatch):
         c.list_subjects()
 
 
+def test_mock_registry_wire_tolerates_junk_schema_values():
+    """Junk fixture schema values (bytes, sets, junk-typed compatibility,
+    heterogeneous subject keys) must survive the HTTP wire: the handler
+    serializes them best-effort instead of dying mid-response, so the client
+    never sees a mid-body disconnect (RemoteDisconnected)."""
+    with MockRegistry({
+        "subjects": {
+            7: [{"id": 1, "version": 1, "schema": {"t": "str"}}],
+            "b": [{"id": 2, "version": 1, "compatibility": {"x": 1},
+                   "schema": b"raw-bytes"}],
+        }
+    }) as reg:
+        c = reg.client
+        # heterogeneous subject keys sort as strings over the wire
+        assert c.list_subjects() == ["7", "b"]
+        # junk compatibility coerced to a safe string, junk schema serialized
+        info = c.get_version("b", 1)
+        assert info["schema"] == '{"t": "str"}' or "raw-bytes" in str(info["schema"])
+        # /schemas/ids for the junk schema resolves without a disconnect
+        by_id = c.get_schema_by_id(2)
+        assert by_id["id"] == 2
+        assert "raw-bytes" in str(by_id["schema"])
+
+
 def test_bind_failure_raises():
     reg = MockRegistry()
     with pytest.raises(MockRegistryError):
