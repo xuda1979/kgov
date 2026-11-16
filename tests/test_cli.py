@@ -628,3 +628,72 @@ def test_nul_byte_path_exit_3(capsys) -> None:
     clean error, not leak a raw ValueError from read_text."""
     code = main(["schema-diff", "--before", "a\x00b", "--after", "c.json"])
     assert code == 3
+
+
+# ---------------------------------------------------------------------------
+# junk option values on the public cmd_* handlers
+# ---------------------------------------------------------------------------
+
+
+def test_cmd_handlers_tolerate_junk_option_values():
+    """The cmd_* handlers are public functions; a library caller can hand them
+    a Namespace whose option values are junk-typed (int, list, bytes, dict,
+    ...). Those must raise a clean CliError — never a raw TypeError from
+    pathlib.Path()/.lower()/.startswith() or a comparison crash."""
+    import argparse
+
+    from kgov.cli import CliError, cmd_check, cmd_registry, cmd_report, cmd_schema_diff
+
+    rules = str(FIXTURES / "rules" / "rules_scale.yaml")
+    msgs = str(FIXTURES / "messages" / "payments_messages.json")
+    topics = str(FIXTURES / "topics" / "topics.json")
+    before = str(FIXTURES / "schemas" / "breaking_before.json")
+    after = str(FIXTURES / "schemas" / "breaking_after.json")
+
+    def ns(**kw):
+        return argparse.Namespace(**kw)
+
+    for junk in (42, ["x"], b"rules", {"a": 1}):
+        with pytest.raises(CliError):
+            cmd_check(ns(config=junk, messages=msgs))
+    for junk in (42, [1], b"msgs", {"a": 1}):
+        with pytest.raises(CliError):
+            cmd_check(ns(config=rules, messages=junk, broker=None, topic=None,
+                         quiet=True, max_violations=None, schema_registry=None,
+                         output=None))
+    with pytest.raises(CliError):
+        cmd_schema_diff(ns(before=42, after=after, format=None, subject="record",
+                           before_version=1, after_version=2, before_id=None,
+                           after_id=None, json=False, markdown=False, output=None))
+    # Junk output values are *dropped* (rendered to stdout), never crashed on:
+    assert cmd_schema_diff(ns(before=before, after=after, format=None, subject="record",
+                              before_version=1, after_version=2, before_id=None,
+                              after_id=None, json=False, markdown=False, output=["x"])) == 1
+    with pytest.raises(CliError):
+        cmd_registry(ns(registry_url=42, subject=None, timeout=10.0, output=None))
+    for junk in (42, ["x"], b"topics", {"a": 1}):
+        with pytest.raises(CliError):
+            cmd_report(ns(topics=junk, registry=None, groups=None, rules=None,
+                          messages=None, violations=None, format="json", output=None))
+    # A junk max_violations value cannot participate in the numeric gate
+    # comparison; it fails closed (gate=0 -> exit 1), never a raw TypeError:
+    assert cmd_check(ns(config=rules, messages=msgs, broker=None, topic=None,
+                        quiet=True, max_violations="abc", schema_registry=None,
+                        output=None)) == 1
+
+
+def test_cmd_check_junk_max_violations_fails_closed():
+    """A junk max_violations value must not participate in the numeric gate
+    comparison; a library caller passing junk gets a fail-closed gate
+    (junk -> gate 0 -> exit 1), never a raw TypeError on '<='."""
+    import argparse
+
+    from kgov.cli import cmd_check
+
+    rules = str(FIXTURES / "rules" / "rules_scale.yaml")
+    msgs = str(FIXTURES / "messages" / "payments_messages.json")
+    for junk in ("abc", "", {"a": 1}, [1], b"x"):
+        assert cmd_check(argparse.Namespace(
+            config=rules, messages=msgs, broker=None, topic=None,
+            quiet=True, max_violations=junk, schema_registry=None,
+            output=None)) == 1

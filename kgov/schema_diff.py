@@ -97,7 +97,7 @@ def parse_schema(text: Any, format: Optional[str] = None) -> tuple[str, Any]:
     else:
         raise SchemaParseError(f"unsupported schema input: {type(text).__name__}")
 
-    fmt = (format or "").lower()
+    fmt = (format or "").lower() if isinstance(format, str) else ""
     if fmt in (SchemaFormat.AVRO, SchemaFormat.JSON):
         return fmt, obj
 

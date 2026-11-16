@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -62,6 +63,10 @@ class CliError(Exception):
 
 
 def _write_out(path: Optional[str], text: str, force: bool = False) -> None:
+    if path and not isinstance(path, (str, os.PathLike)):
+        # pathlib.Path() rejects non-str/PathLike values (bytes, int, list,
+        # dict, ...) with a raw TypeError; treat a junk output value as absent.
+        path = None
     if path:
         try:
             Path(path).write_text(text, encoding="utf-8")
@@ -78,6 +83,8 @@ def _write_out(path: Optional[str], text: str, force: bool = False) -> None:
 
 
 def _load_json_or_exit(path: str):
+    if not isinstance(path, (str, os.PathLike)):
+        raise CliError(f"cannot read {path!r}: not a file path")
     try:
         data = Path(path).read_text(encoding="utf-8")
         return json.loads(data)
@@ -109,6 +116,8 @@ def _load_schema_text(ref: str, fmt: Optional[str]):
     schema payload and return the *text* (plus a format hint — a version ref
     product is always Avro, so a bare ``--format`` can stay authoritative).
     """
+    if not isinstance(ref, str):
+        raise CliError(f"cannot load schema from {ref!r}: not a path/URL/JSON ref")
     if ref.startswith(("http://", "https://")):
         import urllib.request
 
@@ -174,7 +183,9 @@ def cmd_schema_diff(args) -> int:
         raise CliError(f"schema parse error: {exc}") from exc
 
     out_text = ""
-    ext = (args.output or "").lower()
+    ext = ""
+    if isinstance(args.output, str):
+        ext = args.output.lower()
     want_json = bool(args.json) or ext.endswith(".json")
     want_md = bool(args.markdown) or ext.endswith(".md")
     if want_json:
@@ -199,6 +210,8 @@ def _validate(rs, messages_path: Optional[str], broker_url: Optional[str], topic
               registry_url: Optional[str] = None):
     """Produce a violation list from messages/broker, or None if no source."""
     if messages_path:
+        if not isinstance(messages_path, (str, os.PathLike)):
+            raise CliError(f"--messages file missing: {messages_path!r}")
         if not Path(messages_path).is_file():
             raise CliError(f"--messages file missing: {messages_path}")
         return validate_fixture_file(rs, messages_path)
@@ -239,6 +252,8 @@ def _validate(rs, messages_path: Optional[str], broker_url: Optional[str], topic
 
 
 def cmd_check(args) -> int:
+    if not isinstance(args.config, (str, os.PathLike)):
+        raise CliError(f"check requires --config <rules.yaml>: got {args.config!r}")
     if not args.config or not Path(args.config).is_file():
         raise CliError("check requires --config <rules.yaml> (file must exist)")
     try:
@@ -264,7 +279,12 @@ def cmd_check(args) -> int:
         raise CliError(str(exc)) from exc
 
     violates = len(violation_list) > 0
-    max_v = args.max_violations if args.max_violations is not None else 0
+    if args.max_violations is not None and not isinstance(args.max_violations, int):
+        # A junk max-violations value (str/dict/list/...) can't participate in
+        # the numeric gate comparison; fail closed so the gate never passes.
+        max_v = 0
+    else:
+        max_v = args.max_violations if args.max_violations is not None else 0
     gate_failed = violates and (max_v <= 0 or len(violation_list) > max_v)
 
     results = {
@@ -321,7 +341,7 @@ def cmd_topics(args) -> int:
 
 
 def cmd_registry(args) -> int:
-    if not args.registry_url or not args.registry_url.startswith("http"):
+    if not isinstance(args.registry_url, str) or not args.registry_url.startswith("http"):
         raise CliError("registry requires --registry-url <http://host:port>")
 
     try:
@@ -367,18 +387,26 @@ def cmd_registry(args) -> int:
 
 
 def cmd_report(args) -> int:
+    if not isinstance(args.topics, (str, os.PathLike)):
+        raise CliError(f"report requires --topics <topics.json>: got {args.topics!r}")
     if not args.topics or not Path(args.topics).is_file():
         raise CliError("report requires --topics <topics.json>")
     registry = args.registry
     groups = args.groups
     for label, path in (("--registry", registry), ("--groups", groups)):
+        if path is not None and not isinstance(path, (str, os.PathLike)):
+            raise CliError(f"{label} file missing: {path!r}")
         if path and not Path(path).is_file():
             raise CliError(f"{label} file missing: {path}")
     violations: list = []
 
     if args.rules and args.messages:
+        if not isinstance(args.messages, (str, os.PathLike)):
+            raise CliError(f"--messages file missing: {args.messages!r}")
         if not Path(args.messages).is_file():
             raise CliError(f"--messages file missing: {args.messages}")
+        if not isinstance(args.rules, (str, os.PathLike)):
+            raise CliError(f"--rules file missing: {args.rules!r}")
         if not Path(args.rules).is_file():
             raise CliError(f"--rules file missing: {args.rules}")
         try:
@@ -463,7 +491,7 @@ def _require_export_format(args, supported: set[str]) -> None:
     ignored and emit the wrong payload with exit 0.
     """
     export_fmt = getattr(args, "format", "json")
-    if export_fmt not in supported:
+    if not isinstance(export_fmt, str) or export_fmt not in supported:
         raise CliError(
             f"{args.type} export supports --format {'|'.join(sorted(supported))}, "
             f"got {export_fmt!r}"
