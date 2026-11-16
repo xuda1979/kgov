@@ -156,6 +156,23 @@ def test_json_enum_added_additive():
     assert rep.kind == CompatibilityKind.ADDITIVE
 
 
+def test_json_enum_object_value_removed_breaking():
+    """Enum entries may be objects; comparing them must not crash on
+    unhashable entries and must still classify removals as Breaking."""
+    old = {"type": "string", "enum": [{"a": 1}, {"a": 2}]}
+    new = {"type": "string", "enum": [{"a": 1}]}
+    rep = diff_json_schema(_schema(old), _schema(new))
+    assert rep.kind == CompatibilityKind.BREAKING
+    assert any("{\"a\": 2}" in r["message"] for r in rep.results)
+
+
+def test_json_enum_object_value_added_additive():
+    old = {"type": "string", "enum": [{"a": 1}]}
+    new = {"type": "string", "enum": [{"a": 1}, [1, 2]]}
+    rep = diff_json_schema(_schema(old), _schema(new))
+    assert rep.kind == CompatibilityKind.ADDITIVE
+
+
 def test_parse_schema_auto_detects_format():
     fmt, _ = parse_schema(json.dumps({"type": "record", "name": "A", "fields": []}))
     assert fmt == SchemaFormat.AVRO

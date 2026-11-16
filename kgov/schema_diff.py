@@ -492,15 +492,23 @@ def _js_diff(a: Any, b: Any, path: str = "", results: Optional[list] = None) -> 
             add(CompatibilityKind.ADDITIVE, path,
                 "additional properties now allowed")
 
-    # enum
-    ea, eb = set(a.get("enum", [])), set(b.get("enum", []))
+    # enum (values may be unhashable — objects/arrays — so compare by a
+    # canonical serialization rather than by set membership on raw values)
     if "enum" in a or "enum" in b:
-        for v in ea - eb:
-            add(CompatibilityKind.BREAKING, path,
-                f"enum value removed: {_printable(v)}")
-        for v in eb - ea:
-            add(CompatibilityKind.ADDITIVE, path,
-                f"enum value added: {_printable(v)}")
+        def _enum_key(v):
+            if isinstance(v, (dict, list)):
+                return json.dumps(v, sort_keys=True, default=_printable)
+            return repr(v)
+        a_enum = {_enum_key(v): v for v in a.get("enum", [])}
+        b_enum = {_enum_key(v): v for v in b.get("enum", [])}
+        for key, v in a_enum.items():
+            if key not in b_enum:
+                add(CompatibilityKind.BREAKING, path,
+                    f"enum value removed: {_printable(v)}")
+        for key, v in b_enum.items():
+            if key not in a_enum:
+                add(CompatibilityKind.ADDITIVE, path,
+                    f"enum value added: {_printable(v)}")
 
     for kw in ("items",):
         if kw in a or kw in b:
