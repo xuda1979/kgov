@@ -203,3 +203,27 @@ def test_junk_violation_topic_values_ignored():
     )
     payments = next(t for t in rep.topics if t.name == "payments")
     assert payments.violation_count == 1
+
+
+def test_registry_junk_version_entries_ignored():
+    """A registry subject version list containing non-dict junk (even as the
+    last/latest entry) must not crash the report build."""
+    rep = build_governance_report(
+        topics_fixture=FIXTURES / "topics" / "topics.json",
+        registry_fixture={"subjects": {"payments-value": [
+            {"version": 2, "compatibility": "COMPATIBLE"}, "garbage", 42,
+        ]}},
+        now=NOW,
+    )
+    payments = next(t for t in rep.topics if t.name == "payments")
+    assert payments.schema_version == 2
+    assert payments.schema_state == "COMPATIBLE"
+
+    rep2 = build_governance_report(
+        topics_fixture=FIXTURES / "topics" / "topics.json",
+        registry_fixture={"subjects": {"payments-value": ["garbage"]}},
+        now=NOW,
+    )
+    payments2 = next(t for t in rep2.topics if t.name == "payments")
+    assert payments2.schema_version is None
+    assert payments2.schema_state == "NONE"

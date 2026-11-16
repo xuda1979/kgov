@@ -283,6 +283,22 @@ def test_report_violations_junk_topic_exit_0(tmp_path, capsys):
     assert payments["violation_count"] == 1
 
 
+def test_report_registry_junk_versions_exit_0(tmp_path, capsys):
+    """A registry subject whose latest version entry is non-dict junk must not
+    crash (exit 0); an earlier valid mapping is still honored."""
+    reg = tmp_path / "reg.json"
+    reg.write_text('{"subjects": {"payments-value": '
+                   '[{"version": 2, "compatibility": "COMPATIBLE"}, "garbage"]}}',
+                   encoding="utf-8")
+    code = main(["report", "--topics", str(FIXTURES / "topics" / "topics.json"),
+                 "--registry", str(reg)])
+    assert code == 0
+    data = json.loads(capsys.readouterr().out)
+    payments = next(t for t in data["topics"] if t["name"] == "payments")
+    assert payments["schema_version"] == 2
+    assert payments["schema_state"] == "COMPATIBLE"
+
+
 def test_report_check_directory_as_file_exit_3(tmp_path, capsys):
     """A directory passed in place of a file must fail cleanly (exit 3),
     not crash with IsADirectoryError."""

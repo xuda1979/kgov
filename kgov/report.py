@@ -130,8 +130,9 @@ def build_topic_state(
         # no resolvable versions — ignore it rather than crash on .get
         subjects = {}
     versions = subjects.get(subject, []) if subject else []
-    if versions:
-        latest = versions[-1]
+    # only mapping entries describe a version — ignore junk (strings, ints, ...)
+    latest = next((v for v in reversed(versions) if isinstance(v, dict)), None)
+    if latest:
         ts.schema_version = latest.get("version")
         compat = latest.get("compatibility")
         ts.schema_state = {"COMPATIBLE": "COMPATIBLE", "BACKWARD": "COMPATIBLE",
