@@ -254,17 +254,15 @@ def cmd_check(args) -> int:
     }
 
     out_text = json.dumps(results, indent=2, ensure_ascii=False)
-    _write_out(args.output, out_text, force=bool(args.output))
-
-    if not args.output:
-        if not args.quiet:
-            print(out_text)
-    else:
+    if args.output:
+        _write_out(args.output, out_text, force=True)
         print(
             f"ok={results['ok']} violations={len(violation_list)} "
             f"gate={max_v} -> {'PASS' if not gate_failed else 'FAIL'}",
             file=sys.stderr,
         )
+    elif not args.quiet:
+        print(out_text)
 
     return EXIT_OK if not gate_failed else EXIT_FAIL
 
@@ -501,6 +499,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_exp.add_argument("--rules", default=None)
     p_exp.add_argument("--violations", default=None)
     p_exp.add_argument("--max-violations", type=int, default=None)
+    p_exp.add_argument("-q", "--quiet", action="store_true")
     p_exp.add_argument("-o", "--output", default=None)
     p_exp.set_defaults(func=cmd_export)
 

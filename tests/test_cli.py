@@ -170,6 +170,17 @@ def test_export_report_csv(tmp_path):
     assert out.read_text(encoding="utf-8").startswith("name,")
 
 
+def test_export_check_stdout_no_attribute_error(capsys):
+    """export --type check must not crash on the missing --quiet attribute."""
+    rules = FIXTURES / "rules" / "rules_scale.yaml"
+    messages = FIXTURES / "messages" / "payments_messages.json"
+    code = main(["export", "--type", "check", "--config", str(rules),
+                 "--messages", str(messages)])
+    assert code == 1  # fixture messages are intentionally dirty
+    data = json.loads(capsys.readouterr().out)
+    assert len(data["violations"]) == 9
+
+
 # ---------------------------------------------------------------------------
 # registry (live mock server through the CLI)
 # ---------------------------------------------------------------------------
