@@ -417,12 +417,20 @@ def cmd_export(args) -> int:
     if args.type == "schema-diff":
         # The export parser's --format describes *output* format; schema-diff's
         # --format describes the *schema* language. Translate to JSON/MD flags.
-        if getattr(args, "format", "json") in ("markdown", "md"):
+        export_fmt = getattr(args, "format", "json")
+        if export_fmt in ("markdown", "md"):
             args.markdown = True
             args.json = False
-        elif getattr(args, "format", "json") == "json":
+        elif export_fmt == "json":
             args.json = True
             args.markdown = False
+        else:
+            # schema-diff can only render JSON or Markdown; an export that asks
+            # for anything else (e.g. csv) must fail cleanly, not crash later
+            # on the missing --json/--markdown attributes.
+            raise CliError(
+                f"schema-diff export supports --format json|markdown, got {export_fmt!r}"
+            )
         for attr, default in (
             ("before_version", 1), ("after_version", 2),
             ("before_id", None), ("after_id", None),

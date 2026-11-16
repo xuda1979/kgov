@@ -270,6 +270,16 @@ def test_export_check_stdout_no_attribute_error(capsys):
     assert len(data["violations"]) == 9
 
 
+def test_export_schema_diff_csv_unsupported_exit_3(capsys):
+    """schema-diff can only render JSON/Markdown; a csv export request must
+    fail cleanly (exit 3), not crash on the missing --json attribute."""
+    code = main(["export", "--type", "schema-diff", "--format", "csv",
+                 "--before", str(FIXTURES / "schemas" / "v1.json"),
+                 "--after", str(FIXTURES / "schemas" / "v2.json")])
+    assert code == 3
+    assert "json|markdown" in capsys.readouterr().err
+
+
 # ---------------------------------------------------------------------------
 # registry (live mock server through the CLI)
 # ---------------------------------------------------------------------------
