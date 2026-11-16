@@ -13,6 +13,7 @@ from kgov.report import (
     GovernanceReport,
     report_to_csv,
     build_governance_report,
+    build_topic_state,
 )
 from kgov.rules import (
     Message,
@@ -392,3 +393,55 @@ def test_registry_junk_version_entries_ignored():
     payments2 = next(t for t in rep2.topics if t.name == "payments")
     assert payments2.schema_version is None
     assert payments2.schema_state == "NONE"
+
+
+def test_topic_non_string_name_raises_value_error():
+    """A topics entry whose 'name' is a truthy non-string (list, dict, int,
+    bytes, ...) must raise a clean ValueError, not a TypeError from an
+    unhashable key in the groups/violations lookups."""
+    for junk in ([1], {"k": 1}, 42, 2.5, True, b"payments"):
+        with pytest.raises(ValueError, match="must be a string"):
+            build_governance_report(
+                topics_fixture=[{"name": junk, "owner": "team"}],
+                now=NOW,
+            )
+
+
+def test_build_topic_state_non_dict_groups_tolerated():
+    """build_topic_state with a non-mapping groups container (a bare int,
+    list, ...) must not crash on .get; the topic falls back to no consumer
+    state rather than raising AttributeError."""
+    for junk_groups in (1, "x", [{"topic": "payments"}], None, True):
+        ts = build_topic_state(
+            {"name": "payments", "owner": "team"}, {}, junk_groups, {}, now=NOW,
+        )
+        assert ts.name == "payments"
+        assert ts.last_consumed_at is None
+        assert ts.stale is False
+
+
+def test_fixture_junk_path_raises_value_error():
+    """A fixture argument that is not a file path (int, bytes, dict, list,
+    None, tuple) must raise a clean ValueError rather than a raw TypeError
+    from pathlib or the open() on bytes."""
+    for junk in (1, b"b", {"k": 1}, None, (1,), 2.5, True):
+        with pytest.raises(ValueError, match="file path"):
+            build_governance_report(topics_fixture=junk, now=NOW)
+
+
+def test_rule_violations_non_list_ignored():
+    """A rule_violations value that is not a list (a bare int, mapping, ...)
+    must not crash the report build; counts are simply empty."""
+    rep = build_governance_report(
+        topics_fixture=FIXTURES / "topics" / "topics.json",
+        rule_violations=7,
+        now=NOW,
+    )
+    assert all(t.violation_count == 0 for t in rep.topics)
+
+    rep2 = build_governance_report(
+        topics_fixture=[{"name": "payments"}],
+        rule_violations=[{"topic": "payments"}, 5, None],
+        now=NOW,
+    )
+    assert rep2.topics[0].violation_count == 1

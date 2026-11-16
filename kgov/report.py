@@ -19,6 +19,7 @@ Staleness is evaluated against the current time when ``now`` is not provided.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -33,6 +34,11 @@ from .model import now_utc_iso
 
 
 def _read_json(path: str | Path) -> Any:
+    if not isinstance(path, (str, os.PathLike)):
+        # junk values (ints, bytes, lists, dicts, None, tuples, ...) are not
+        # file paths — pathlib itself would raise a raw TypeError on bytes;
+        # raise a clean error instead
+        raise ValueError(f"fixture must be a file path: {path!r}")
     try:
         data = Path(path).read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
@@ -120,6 +126,13 @@ def build_topic_state(
             f"topics fixture entry must be a mapping with a 'name': {topic!r}"
         )
     name = topic["name"]
+    # only a string name identifies a topic; junk truthy values (lists,
+    # dicts, ints, bytes, ...) would crash the dict lookups below on an
+    # unhashable key and are meaningless as identifiers
+    if not isinstance(name, str):
+        raise ValueError(
+            f"topics fixture entry 'name' must be a string: {name!r}"
+        )
     ts = TopicState(name=name)
     ts.owner = topic.get("owner") or "unknown"
     tags = topic.get("tags", [])
@@ -172,6 +185,10 @@ def build_topic_state(
     latest_msg = _parse_dt(topic.get("latest_message_at"))
     ts.latest_message_at = latest_msg.isoformat() if latest_msg else None
 
+    # a non-mapping groups container (a bare int, list, ... passed directly
+    # to build_topic_state) carries no consumer state — ignore it
+    if not isinstance(groups, dict):
+        groups = {}
     group = groups.get(name)
     if not isinstance(group, dict):
         group = {}
@@ -268,12 +285,15 @@ def build_governance_report(
 
     # violation counts per topic
     counts: dict[str, int] = {}
-    for vio in rule_violations or []:
-        topic = vio.get("topic") if isinstance(vio, dict) else getattr(vio, "topic", None)
-        # only string names can match a topic row; junk values (lists, dicts,
-        # ints, ...) are ignored rather than crashing on an unhashable key
-        if isinstance(topic, str) and topic:
-            counts[topic] = counts.get(topic, 0) + 1
+    if isinstance(rule_violations, list):
+        # only lists of violation entries describe violations; junk (a bare
+        # int, a mapping, ...) would crash the iteration below
+        for vio in rule_violations:
+            topic = vio.get("topic") if isinstance(vio, dict) else getattr(vio, "topic", None)
+            # only string names can match a topic row; junk values (lists, dicts,
+            # ints, ...) are ignored rather than crashing on an unhashable key
+            if isinstance(topic, str) and topic:
+                counts[topic] = counts.get(topic, 0) + 1
 
     now = now or datetime.now(timezone.utc)
     states = [
