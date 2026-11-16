@@ -136,16 +136,17 @@ def build_topic_state(
 
     # schema state from registry subject
     subject = topic.get("schema_subject")
+    # only a string subject names a registry entry (and is JSON-safe); junk
+    # values (lists, dicts, ints, bytes, ...) are unhashable or meaningless
+    # as keys — treat as absent everywhere in the row
+    if not isinstance(subject, str) or not subject:
+        subject = None
     ts.schema_subject = subject
     subjects = registry.get("subjects", {}) if isinstance(registry, dict) else {}
     if not isinstance(subjects, dict):
         # a malformed registry (subjects entry that is not a mapping) carries
         # no resolvable versions — ignore it rather than crash on .get
         subjects = {}
-    # only a string subject names a registry entry; junk values (lists, dicts,
-    # ints, ...) are unhashable or meaningless as keys — treat as absent
-    if not isinstance(subject, str) or not subject:
-        subject = None
     versions = subjects.get(subject, []) if subject else []
     # only a list of version entries describes a history; junk values
     # (ints, strings, dicts, ...) must not crash reversed()/iteration below

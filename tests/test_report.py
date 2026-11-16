@@ -197,10 +197,11 @@ def test_registry_subject_non_list_value_is_ignored():
 
 
 def test_topic_non_string_schema_subject_ignored():
-    """A topics entry whose schema_subject is not a string (list/int/None) must
-    not crash when looking up the registry subject (unhashable dict key); no
-    schema history is resolvable so the topic falls back to NONE."""
-    for junk in (["payments-value", "x"], 42, {"s": 1}, None, ""):
+    """A topics entry whose schema_subject is not a string (list/int/dict/
+    bytes/None) must not crash when looking up the registry subject or when
+    serializing the row; no schema history is resolvable so the topic falls
+    back to NONE and the junk value is not carried into the row."""
+    for junk in (["payments-value", "x"], 42, {"s": 1}, None, "", b"a"):
         rep = build_governance_report(
             topics_fixture=[{"name": "payments", "schema_subject": junk}],
             registry_fixture={"subjects": {"payments-value": [
@@ -210,6 +211,8 @@ def test_topic_non_string_schema_subject_ignored():
         payments = rep.topics[0]
         assert payments.schema_version is None
         assert payments.schema_state == "NONE"
+        assert payments.schema_subject is None
+        rep.to_json()  # row must stay JSON-serializable
 
 
 def test_registry_bare_list_ignored():
