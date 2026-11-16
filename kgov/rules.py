@@ -46,6 +46,7 @@ violations.
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -95,12 +96,16 @@ def load_rules_yaml(text: str) -> RuleSet:
 
 
 def load_rules_file(path: str | Path) -> RuleSet:
+    if not isinstance(path, (str, os.PathLike)):
+        # junk values (ints, bytes, lists, dicts, None, ...) are not file
+        # paths — pathlib itself would raise a raw TypeError on bytes;
+        # raise a clean typed error instead
+        raise RulesConfigError(f"rules file must be a file path: {path!r}")
     try:
         text = Path(path).read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
         raise RulesConfigError(f"{path}: file is not valid UTF-8") from exc
     return load_rules_yaml(text)
-
 
 def build_ruleset(data: Any) -> RuleSet:
     if not isinstance(data, dict):
@@ -400,6 +405,11 @@ def iter_messages_from_json(path: str | Path, topic: Optional[str] = None) -> It
 
         { "messages": [ {"value": {...}} ] }
     """
+    if not isinstance(path, (str, os.PathLike)):
+        # junk values (ints, bytes, lists, dicts, None, ...) are not file
+        # paths — pathlib itself would raise a raw TypeError on bytes;
+        # raise a clean typed error instead
+        raise RulesConfigError(f"message fixture must be a file path: {path!r}")
     try:
         data = Path(path).read_text(encoding="utf-8")
         root = json.loads(data)

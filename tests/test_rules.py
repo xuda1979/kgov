@@ -91,6 +91,22 @@ def test_messages_fixture_invalid_utf8_rejected(tmp_path):
         list(iter_messages_from_json(path))
 
 
+def test_junk_fixture_path_args_raise_rules_config_error():
+    """A rules/messages fixture argument that is not a file path (int, bytes,
+    list, dict, None, tuple, float, bool) must raise a clean RulesConfigError
+    rather than a raw TypeError from pathlib/os.fspath (pathlib rejects
+    bytes with its own TypeError)."""
+    rs = _rs()
+    junk = (1, 2.5, b"b", [1], (1,), {"k": 1}, None, True)
+    for bad in junk:
+        with pytest.raises(RulesConfigError, match="file path"):
+            load_rules_file(bad)
+        with pytest.raises(RulesConfigError, match="file path"):
+            list(iter_messages_from_json(bad))
+        with pytest.raises(RulesConfigError, match="file path"):
+            validate_fixture_file(rs, bad)
+
+
 def test_unknown_type_rejected():
     with pytest.raises(UnknownFieldTypeError):
         build_ruleset({"fields": {"x": {"type": "datetime"}}})
