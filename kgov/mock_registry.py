@@ -240,7 +240,9 @@ class MockRegistry:
     def add_subject(self, subject: str, *versions: dict) -> None:
         """Append a subject (or extend an existing one) with one or more versions."""
         existing = self._fixture.setdefault(subject, [])
-        existing.extend(versions)
+        # route through the same dict-only filter as __init__/set_fixture —
+        # junk non-dict entries would crash .get()/int() in the accessors
+        existing.extend(_version_entries(list(versions)))
 
     def list_subjects(self) -> list[str]:
         return sorted(self._fixture.keys())

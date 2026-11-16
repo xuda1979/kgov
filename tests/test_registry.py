@@ -168,6 +168,31 @@ def test_mock_registry_tolerates_junk_version_entries():
     assert reg2.compatibility_level(None) == "BACKWARD"
 
 
+def test_add_subject_tolerates_junk_versions_and_accessors_safe():
+    """Junk version entries passed to add_subject (which bypasses the
+    __init__/set_fixture filter) must be dropped, not crash the accessors
+    with AttributeError on .get(); valid dict versions still resolve."""
+    reg = MockRegistry()
+    reg.add_subject(
+        "payments-value",
+        {"id": 1, "version": 1, "compatibility": "BACKWARD", "schema": {"t": "int"}},
+        42, "junk", None, [1],
+        {"id": 9, "version": 2, "compatibility": "FORWARD", "schema": {"t": "str"}},
+    )
+    assert reg.list_subjects() == ["payments-value"]
+    # both valid dict entries survive; junk is dropped
+    assert reg.versions("payments-value") == [1, 2]
+    assert reg.schema_by_id(9) == {"t": "str"}
+    assert reg.compatibility_level("payments-value") == "FORWARD"
+    # a subject seeded with only junk stays inert, never crashes
+    reg.add_subject("all-junk", 42, "nope", None, [1])
+    assert reg.versions("all-junk") == []
+    assert reg.version("all-junk") is None
+    assert reg.compatibility_level("all-junk") is None
+    assert reg.schema_by_id(42) is None
+
+
+
 def test_set_fixture_swap(server):
     client = server.client
     assert client.list_subjects() == ["orders-value", "payments-value"]
