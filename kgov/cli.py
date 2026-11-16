@@ -159,10 +159,11 @@ def _load_schema_text(ref: str, fmt: Optional[str]):
 
 
 def cmd_schema_diff(args) -> int:
-    before_p, after_p = args.before, args.after
+    before_p = getattr(args, "before", None)
+    after_p = getattr(args, "after", None)
     if not before_p or not after_p:
         raise CliError("schema-diff requires --before and --after")
-    fmt = args.format
+    fmt = getattr(args, "format", None)
     try:
         before_text, _ = _load_schema_text(before_p, fmt)
         after_text, _ = _load_schema_text(after_p, fmt)
@@ -172,11 +173,11 @@ def cmd_schema_diff(args) -> int:
         rep = diff_schemas(
             before_text,
             after_text,
-            subject=args.subject or "record",
-            before_version=args.before_version,
-            after_version=args.after_version,
-            before_id=args.before_id,
-            after_id=args.after_id,
+            subject=getattr(args, "subject", None) or "record",
+            before_version=getattr(args, "before_version", 1),
+            after_version=getattr(args, "after_version", 2),
+            before_id=getattr(args, "before_id", None),
+            after_id=getattr(args, "after_id", None),
             format=fmt,
         )
     except SchemaParseError as exc:
@@ -184,16 +185,17 @@ def cmd_schema_diff(args) -> int:
 
     out_text = ""
     ext = ""
-    if isinstance(args.output, str):
-        ext = args.output.lower()
-    want_json = bool(args.json) or ext.endswith(".json")
-    want_md = bool(args.markdown) or ext.endswith(".md")
+    output = getattr(args, "output", None)
+    if isinstance(output, str):
+        ext = output.lower()
+    want_json = bool(getattr(args, "json", False)) or ext.endswith(".json")
+    want_md = bool(getattr(args, "markdown", False)) or ext.endswith(".md")
     if want_json:
         out_text = json.dumps(rep.to_dict(), indent=2, ensure_ascii=False)
     else:
         out_text = rep.to_markdown()
 
-    _write_out(args.output, out_text)
+    _write_out(output, out_text)
     if rep.kind == CompatibilityKind.BREAKING:
         print(f"SCHEMA DIFF: {rep.kind} (incompatible)", file=sys.stderr)
         return EXIT_FAIL
@@ -252,26 +254,30 @@ def _validate(rs, messages_path: Optional[str], broker_url: Optional[str], topic
 
 
 def cmd_check(args) -> int:
-    if not isinstance(args.config, (str, os.PathLike)):
-        raise CliError(f"check requires --config <rules.yaml>: got {args.config!r}")
-    if not args.config or not Path(args.config).is_file():
+    config = getattr(args, "config", None)
+    if not isinstance(config, (str, os.PathLike)):
+        raise CliError(f"check requires --config <rules.yaml>: got {config!r}")
+    if not config or not Path(config).is_file():
         raise CliError("check requires --config <rules.yaml> (file must exist)")
     try:
-        rs = load_rules_file(args.config)
+        rs = load_rules_file(config)
     except RulesConfigError as exc:
         raise CliError(f"bad rules config: {exc}") from exc
 
     # A CI gate must never silently pass because no messages were supplied.
-    if args.topic and not args.broker:
+    topic = getattr(args, "topic", None)
+    broker = getattr(args, "broker", None)
+    messages = getattr(args, "messages", None)
+    if topic and not broker:
         raise CliError("--topic requires --broker <bootstrap.servers>")
-    if not args.messages and not (args.broker and args.topic):
+    if not messages and not (broker and topic):
         raise CliError(
             "check needs a data source: pass --messages <file> or "
             "--broker <bootstrap> --topic <name>"
         )
 
     try:
-        violation_list = _validate(rs, args.messages, args.broker, args.topic,
+        violation_list = _validate(rs, messages, broker, topic,
                                    getattr(args, "schema_registry", None))
     except RulesConfigError as exc:
         raise CliError(f"bad message fixture: {exc}") from exc
@@ -279,12 +285,13 @@ def cmd_check(args) -> int:
         raise CliError(str(exc)) from exc
 
     violates = len(violation_list) > 0
-    if args.max_violations is not None and not isinstance(args.max_violations, int):
+    max_violations = getattr(args, "max_violations", None)
+    if max_violations is not None and not isinstance(max_violations, int):
         # A junk max-violations value (str/dict/list/...) can't participate in
         # the numeric gate comparison; fail closed so the gate never passes.
         max_v = 0
     else:
-        max_v = args.max_violations if args.max_violations is not None else 0
+        max_v = max_violations if max_violations is not None else 0
     gate_failed = violates and (max_v <= 0 or len(violation_list) > max_v)
 
     results = {
@@ -298,14 +305,14 @@ def cmd_check(args) -> int:
     }
 
     out_text = json.dumps(results, indent=2, ensure_ascii=False)
-    if args.output:
+    if getattr(args, "output", None):
         _write_out(args.output, out_text, force=True)
         print(
             f"ok={results['ok']} violations={len(violation_list)} "
             f"gate={max_v} -> {'PASS' if not gate_failed else 'FAIL'}",
             file=sys.stderr,
         )
-    elif not args.quiet:
+    elif not getattr(args, "quiet", False):
         print(out_text)
 
     return EXIT_OK if not gate_failed else EXIT_FAIL
@@ -317,7 +324,8 @@ def cmd_check(args) -> int:
 
 
 def cmd_topics(args) -> int:
-    if not args.bootstrap:
+    bootstrap = getattr(args, "bootstrap", None)
+    if not bootstrap:
         raise CliError("topics requires --bootstrap <host:port>")
     try:
         from .broker import list_topics
@@ -325,13 +333,13 @@ def cmd_topics(args) -> int:
         raise CliError("broker features require the 'broker' extra (confluent-kafka)")
 
     try:
-        topics = list_topics(args.bootstrap, timeout=args.timeout or 10.0)
+        topics = list_topics(bootstrap, timeout=getattr(args, "timeout", None) or 10.0)
     except Exception as exc:
-        raise CliError(f"failed to list topics from {args.bootstrap}: {exc}") from exc
+        raise CliError(f"failed to list topics from {bootstrap}: {exc}") from exc
 
     payload = {"topics": topics, "generated_at": now_utc_iso()}
     out_text = json.dumps(payload, indent=2, ensure_ascii=False)
-    _write_out(args.output, out_text, force=bool(args.output))
+    _write_out(getattr(args, "output", None), out_text, force=bool(getattr(args, "output", None)))
     return EXIT_OK
 
 
@@ -341,7 +349,8 @@ def cmd_topics(args) -> int:
 
 
 def cmd_registry(args) -> int:
-    if not isinstance(args.registry_url, str) or not args.registry_url.startswith("http"):
+    registry_url = getattr(args, "registry_url", None)
+    if not isinstance(registry_url, str) or not registry_url.startswith("http"):
         raise CliError("registry requires --registry-url <http://host:port>")
 
     try:
@@ -349,14 +358,15 @@ def cmd_registry(args) -> int:
     except ImportError:
         raise CliError("registry module unavailable")
 
-    client = SchemaRegistryClient(args.registry_url, timeout=args.timeout or 10.0)
-    if args.subject:
+    client = SchemaRegistryClient(registry_url, timeout=getattr(args, "timeout", None) or 10.0)
+    subject = getattr(args, "subject", None)
+    if subject:
         # Single subject: emit subject details (id/version/schema/../compat).
         try:
-            versions = client.get_versions(args.subject)
-            payload = {"subject": args.subject, "versions": []}
+            versions = client.get_versions(subject)
+            payload = {"subject": subject, "versions": []}
             for v in versions:
-                info = client.get_version(args.subject, v)
+                info = client.get_version(subject, v)
                 payload["versions"].append(
                     {
                         "id": info["id"],
@@ -377,7 +387,7 @@ def cmd_registry(args) -> int:
             raise CliError(f"registry request failed: {exc}") from exc
 
     out_text = json.dumps(payload, indent=2, ensure_ascii=False)
-    _write_out(args.output, out_text, force=bool(args.output))
+    _write_out(getattr(args, "output", None), out_text, force=bool(getattr(args, "output", None)))
     return EXIT_OK
 
 
@@ -387,12 +397,13 @@ def cmd_registry(args) -> int:
 
 
 def cmd_report(args) -> int:
-    if not isinstance(args.topics, (str, os.PathLike)):
-        raise CliError(f"report requires --topics <topics.json>: got {args.topics!r}")
-    if not args.topics or not Path(args.topics).is_file():
+    topics = getattr(args, "topics", None)
+    if not isinstance(topics, (str, os.PathLike)):
+        raise CliError(f"report requires --topics <topics.json>: got {topics!r}")
+    if not topics or not Path(topics).is_file():
         raise CliError("report requires --topics <topics.json>")
-    registry = args.registry
-    groups = args.groups
+    registry = getattr(args, "registry", None)
+    groups = getattr(args, "groups", None)
     for label, path in (("--registry", registry), ("--groups", groups)):
         if path is not None and not isinstance(path, (str, os.PathLike)):
             raise CliError(f"{label} file missing: {path!r}")
@@ -400,21 +411,23 @@ def cmd_report(args) -> int:
             raise CliError(f"{label} file missing: {path}")
     violations: list = []
 
-    if args.rules and args.messages:
-        if not isinstance(args.messages, (str, os.PathLike)):
-            raise CliError(f"--messages file missing: {args.messages!r}")
-        if not Path(args.messages).is_file():
-            raise CliError(f"--messages file missing: {args.messages}")
-        if not isinstance(args.rules, (str, os.PathLike)):
-            raise CliError(f"--rules file missing: {args.rules!r}")
-        if not Path(args.rules).is_file():
-            raise CliError(f"--rules file missing: {args.rules}")
+    rules = getattr(args, "rules", None)
+    messages = getattr(args, "messages", None)
+    if rules and messages:
+        if not isinstance(messages, (str, os.PathLike)):
+            raise CliError(f"--messages file missing: {messages!r}")
+        if not Path(messages).is_file():
+            raise CliError(f"--messages file missing: {messages}")
+        if not isinstance(rules, (str, os.PathLike)):
+            raise CliError(f"--rules file missing: {rules!r}")
+        if not Path(rules).is_file():
+            raise CliError(f"--rules file missing: {rules}")
         try:
-            rs = load_rules_file(args.rules)
-            violations = validate_fixture_file(rs, args.messages)
+            rs = load_rules_file(rules)
+            violations = validate_fixture_file(rs, messages)
         except RulesConfigError as exc:
             raise CliError(f"bad rules/messages: {exc}") from exc
-    elif args.violations:
+    elif getattr(args, "violations", None):
         vio = _load_json_or_exit(args.violations)
         if isinstance(vio, list):
             violations = vio
@@ -423,7 +436,7 @@ def cmd_report(args) -> int:
 
     try:
         rep = build_governance_report(
-            topics_fixture=args.topics,
+            topics_fixture=topics,
             registry_fixture=registry,
             groups_fixture=groups,
             rule_violations=violations,
@@ -431,15 +444,16 @@ def cmd_report(args) -> int:
     except ValueError as exc:
         raise CliError(str(exc)) from exc
 
-    fmt = args.format or "json"
-    if args.output and str(args.output).endswith(".csv"):
+    fmt = getattr(args, "format", None) or "json"
+    output = getattr(args, "output", None)
+    if output and str(output).endswith(".csv"):
         fmt = "csv"
     if fmt == "csv":
         text = report_to_csv(rep)
-        _write_out(args.output, text, force=bool(args.output))
+        _write_out(output, text, force=bool(output))
     else:
         text = rep.to_json()
-        _write_out(args.output, text, force=bool(args.output))
+        _write_out(output, text, force=bool(output))
     return EXIT_OK
 
 
@@ -449,7 +463,8 @@ def cmd_report(args) -> int:
 
 
 def cmd_export(args) -> int:
-    if args.type == "schema-diff":
+    export_type = getattr(args, "type", None)
+    if export_type == "schema-diff":
         # The export parser's --format describes *output* format; schema-diff's
         # --format describes the *schema* language. Translate to JSON/MD flags.
         export_fmt = getattr(args, "format", "json")
@@ -474,13 +489,13 @@ def cmd_export(args) -> int:
                 setattr(args, attr, default)
         args.format = getattr(args, "schema_format", None)
         return cmd_schema_diff(args)
-    if args.type in ("check", "violations"):
+    if export_type in ("check", "violations"):
         _require_export_format(args, {"json"})
         return cmd_check(args)
-    if args.type == "report":
+    if export_type == "report":
         _require_export_format(args, {"json", "csv"})
         return cmd_report(args)
-    raise CliError(f"unknown export type: {args.type}")
+    raise CliError(f"unknown export type: {export_type}")
 
 
 def _require_export_format(args, supported: set[str]) -> None:
@@ -493,7 +508,7 @@ def _require_export_format(args, supported: set[str]) -> None:
     export_fmt = getattr(args, "format", "json")
     if not isinstance(export_fmt, str) or export_fmt not in supported:
         raise CliError(
-            f"{args.type} export supports --format {'|'.join(sorted(supported))}, "
+            f"{getattr(args, 'type', None)} export supports --format {'|'.join(sorted(supported))}, "
             f"got {export_fmt!r}"
         )
 

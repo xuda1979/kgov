@@ -697,3 +697,55 @@ def test_cmd_check_junk_max_violations_fails_closed():
             config=rules, messages=msgs, broker=None, topic=None,
             quiet=True, max_violations=junk, schema_registry=None,
             output=None)) == 1
+
+
+def test_cmd_handlers_tolerate_missing_attributes():
+    """The cmd_* handlers are public functions; a library caller can hand them
+    a partial Namespace that lacks some of the parser's option attributes.
+    Missing attributes must behave exactly like their argparse defaults
+    (None / False) — never a raw AttributeError on direct attribute access."""
+    import argparse
+
+    from kgov.cli import (CliError, cmd_check, cmd_export, cmd_registry,
+                          cmd_report, cmd_schema_diff)
+
+    rules = str(FIXTURES / "rules" / "rules_scale.yaml")
+    msgs = str(FIXTURES / "messages" / "payments_messages.json")
+    topics = str(FIXTURES / "topics" / "topics.json")
+    before = str(FIXTURES / "schemas" / "breaking_before.json")
+    after = str(FIXTURES / "schemas" / "breaking_after.json")
+
+    def ns(**kw):
+        return argparse.Namespace(**kw)
+
+    # Empty Namespace: each handler must produce its clean missing-arg CliError.
+    for handler, junk in (
+        (cmd_schema_diff, ns()),
+        (cmd_registry, ns()),
+        (cmd_report, ns()),
+    ):
+        with pytest.raises(CliError):
+            handler(junk)
+    with pytest.raises(CliError):
+        cmd_check(ns(config=rules))  # no data source -> CliError
+
+    # Partial Namespace missing the data-source attributes: the missing
+    # attributes behave as None, so cmd_check still runs against --messages
+    # (broker/topic absent -> not required) and gates exit 1 on the matches,
+    # never an AttributeError on direct access.
+    assert cmd_check(ns(config=rules, messages=msgs)) == 1
+
+    # Partial Namespace missing `output` (parser default None): rendered to
+    # stdout; schema-diff on the breaking fixture still gates exit 1.
+    assert cmd_schema_diff(ns(before=before, after=after)) == 1
+
+    # cmd_export with a partial Namespace delegates to the target handler with
+    # argparse defaults filled in for the schema-diff version/id attributes.
+    assert cmd_export(ns(type="schema-diff", format="json", before=before,
+                         after=after)) == 1
+    # cmd_export delegating to cmd_check with a real data source runs and
+    # gates exit 1 on the 9 violations (broker/topic absent -> not required).
+    assert cmd_export(ns(type="check", format="json", config=rules,
+                         messages=msgs, broker=None, topic=None)) == 1
+    # Missing registry/groups behave as None (tolerated) -> report builds.
+    assert cmd_report(ns(topics=topics)) == 0
