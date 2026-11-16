@@ -43,6 +43,22 @@ def json_default(obj: Any) -> Any:
     return repr(obj)
 
 
+def _json_safe(value: Any) -> Any:
+    """Recursively coerce non-JSON-safe values (bytes, bytearray, set, tuple)
+    into plain JSON-safe forms so ``to_dict()`` output can go straight to
+    ``json.dumps`` with no ``default=`` hook. Unchanged leaves stay as-is."""
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            return value.decode("utf-8")
+        except UnicodeDecodeError:
+            return value.hex()
+    return value
+
+
 # ---------------------------------------------------------------------------
 # Schema diff
 # ---------------------------------------------------------------------------
@@ -85,7 +101,10 @@ class SchemaDiffReport:
     def to_dict(self) -> dict:
         d = asdict(self)
         d["compatible"] = self.kind != CompatibilityKind.BREAKING
-        return d
+        # asdict() is raw: junk results entries (bytes, sets, non-string keys,
+        # ...) would crash json.dumps on the export path. Coerce to JSON-safe
+        # leaves, consistent with to_markdown()'s junk tolerance.
+        return _json_safe(d)
 
     def to_markdown(self) -> str:
         lines = [

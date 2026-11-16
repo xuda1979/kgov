@@ -481,3 +481,41 @@ def test_markdown_tolerates_junk_results_entries():
     # marker instead of crashing: one per junk dict, keeping a valid string path
     assert md.count("- ? **?** `(root)` —") == 2
     assert md.count("- ? **?** `a` —") == 1
+
+
+def test_report_to_dict_json_serializable_with_junk_results():
+    """``SchemaDiffReport.to_dict()`` must survive a bare ``json.dumps`` even
+    when ``results`` contains junk entries (bytes, sets, non-string keys,
+    tuples, nested junk) — the JSON export path serializes to_dict() with no
+    ``default=`` hook."""
+    import json
+
+    from kgov.model import SchemaDiffReport
+
+    rep = SchemaDiffReport(
+        format="avro",
+        subject="s",
+        before_version=1,
+        after_version=2,
+        results=[
+            {"kind": "Breaking", "path": "a", "message": "gone"},
+            {"kind": "Breaking", "path": "b", "message": "x", "extra": b"bytes"},
+            {"kind": b"kind", "path": "c", "message": 42, "nested": [{"deep": True}]},
+            {"kind": ["x"]},
+            {"junk_key": {1, 2}},
+            {1: "int-key"},
+            b"raw-bytes-entry",
+            ("tuple", "entry"),
+            None,
+            42,
+        ],
+    )
+    d = rep.to_dict()
+    # junk bytes are coerced to str; int keys are JSON-safe and survive as-is
+    assert isinstance(d["results"][1]["extra"], str)
+    assert d["results"][5][1] == "int-key"
+    assert isinstance(d["results"][7], list)
+    assert json.dumps(d, indent=2, ensure_ascii=False)  # must not raise
+    # untouched scalar fields survive with their original type
+    assert d["before_version"] == 1
+    assert d["compatible"] is True
