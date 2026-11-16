@@ -168,6 +168,17 @@ def test_report_missing_rules_file_exit_3(capsys):
     assert "--rules file missing" in out.err
 
 
+def test_report_missing_registry_or_groups_exit_3(capsys):
+    """report --registry/--groups must fail cleanly (exit 3) for missing files."""
+    topics = str(FIXTURES / "topics" / "topics.json")
+    code = main(["report", "--topics", topics, "--registry", "/no/registry.json"])
+    assert code == 3
+    assert "--registry file missing" in capsys.readouterr().err
+    code = main(["report", "--topics", topics, "--groups", "/no/groups.json"])
+    assert code == 3
+    assert "--groups file missing" in capsys.readouterr().err
+
+
 # ---------------------------------------------------------------------------
 # export
 # ---------------------------------------------------------------------------

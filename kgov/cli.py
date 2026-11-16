@@ -349,6 +349,9 @@ def cmd_report(args) -> int:
         raise CliError("report requires --topics <topics.json>")
     registry = args.registry
     groups = args.groups
+    for label, path in (("--registry", registry), ("--groups", groups)):
+        if path and not Path(path).exists():
+            raise CliError(f"{label} file missing: {path}")
     violations: list = []
 
     if args.rules and args.messages:
