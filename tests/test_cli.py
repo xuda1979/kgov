@@ -299,6 +299,22 @@ def test_report_registry_junk_versions_exit_0(tmp_path, capsys):
     assert payments["schema_state"] == "COMPATIBLE"
 
 
+def test_report_tags_null_or_non_list_exit_0(tmp_path, capsys):
+    """A topics entry whose tags are null/non-list must not crash (exit 0);
+    malformed tags are treated as empty."""
+    fixture = tmp_path / "topics.json"
+    fixture.write_text('{"topics": [{"name": "orders", "tags": null}, '
+                       '{"name": "inventory-events", "tags": 5}, '
+                       '{"name": "payments", "tags": ["core"]}]}', encoding="utf-8")
+    code = main(["report", "--topics", str(fixture)])
+    assert code == 0
+    data = json.loads(capsys.readouterr().out)
+    d = {t["name"]: t for t in data["topics"]}
+    assert d["orders"]["tags"] == []
+    assert d["inventory-events"]["tags"] == []
+    assert d["payments"]["tags"] == ["core"]
+
+
 def test_report_groups_junk_topic_keys_exit_0(tmp_path, capsys):
     """A list-form groups fixture whose topic/group key is non-string (list)
     must be skipped cleanly (exit 0), not crash on an unhashable key."""

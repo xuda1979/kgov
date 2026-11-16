@@ -117,7 +117,8 @@ def build_topic_state(
     name = topic["name"]
     ts = TopicState(name=name)
     ts.owner = topic.get("owner") or "unknown"
-    ts.tags = list(topic.get("tags", []))
+    tags = topic.get("tags", [])
+    ts.tags = list(tags) if isinstance(tags, list) else []
     ts.partitions = int(topic.get("partitions", 1))
     ts.replication_factor = int(topic.get("replication_factor", 1))
 

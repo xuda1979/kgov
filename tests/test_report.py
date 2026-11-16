@@ -221,6 +221,23 @@ def test_junk_violation_topic_values_ignored():
     assert payments.violation_count == 1
 
 
+def test_tags_null_or_non_list_ignored():
+    """A topics entry whose tags value is null (or a non-list) must not crash
+    earlier non-list tags (e.g. an int) with TypeError."""
+    rep = build_governance_report(
+        topics_fixture=[
+            {"name": "orders", "tags": None},
+            {"name": "inventory-events", "tags": 5},
+            {"name": "payments", "tags": ["core"]},
+        ],
+        now=NOW,
+    )
+    d = {t.name: t for t in rep.topics}
+    assert d["orders"].tags == []
+    assert d["inventory-events"].tags == []
+    assert d["payments"].tags == ["core"]
+
+
 def test_registry_junk_version_entries_ignored():
     """A registry subject version list containing non-dict junk (even as the
     last/latest entry) must not crash the report build."""
