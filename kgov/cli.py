@@ -63,7 +63,14 @@ class CliError(Exception):
 
 def _write_out(path: Optional[str], text: str, force: bool = False) -> None:
     if path:
-        Path(path).write_text(text, encoding="utf-8")
+        try:
+            Path(path).write_text(text, encoding="utf-8")
+        except FileNotFoundError as exc:
+            raise CliError(f"cannot write output: no such directory: {path}") from exc
+        except IsADirectoryError as exc:
+            raise CliError(f"cannot write output: path is a directory: {path}") from exc
+        except OSError as exc:
+            raise CliError(f"cannot write output {path!r}: {exc}") from exc
     elif force:
         raise CliError(f"no output path given (required for this export): {path!r}")
     else:

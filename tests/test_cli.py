@@ -204,6 +204,22 @@ def test_report_check_directory_as_file_exit_3(tmp_path, capsys):
     assert "not a file" in capsys.readouterr().err
 
 
+def test_output_to_missing_directory_exit_3(capsys):
+    """An -o path inside a nonexistent directory (or pointing at a directory)
+    must fail cleanly (exit 3), not crash with FileNotFoundError/
+    IsADirectoryError."""
+    topics = str(FIXTURES / "topics" / "topics.json")
+    code = main(["report", "--topics", topics, "-o", "/no/such/dir/out.json"])
+    assert code == 3
+    assert "cannot write output" in capsys.readouterr().err
+
+    rules = str(FIXTURES / "rules" / "rules_scale.yaml")
+    messages = str(FIXTURES / "messages" / "payments_messages.json")
+    code = main(["check", "--config", rules, "--messages", messages, "-o", "/tmp"])
+    assert code == 3
+    assert "is a directory" in capsys.readouterr().err
+
+
 # ---------------------------------------------------------------------------
 # export
 # ---------------------------------------------------------------------------
