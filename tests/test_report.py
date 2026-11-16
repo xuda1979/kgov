@@ -299,6 +299,22 @@ def test_tags_null_or_non_list_ignored():
     assert d["payments"].tags == ["core"]
 
 
+def test_tags_with_junk_elements_kept_strings_only_and_csv_safe():
+    """Junk tag elements (ints, dicts, ...) are dropped so the row model and
+    the CSV export (which joins tags with '|') never crash on non-str items."""
+    rep = build_governance_report(
+        topics_fixture=[
+            {"name": "payments", "tags": [1, {"junk": 1}, "core", None, "critical"]},
+        ],
+        now=NOW,
+    )
+    t = rep.topics[0]
+    assert t.tags == ["core", "critical"]
+    csv = report_to_csv(rep)
+    assert "core|critical" in csv
+    assert t.to_dict()["tags"] == ["core", "critical"]
+
+
 def test_partitions_and_replication_junk_fall_back_to_defaults():
     """Missing/non-numeric partitions or replication_factor must not crash
     (e.g. int(None) / int([1])) and fall back to sensible defaults."""

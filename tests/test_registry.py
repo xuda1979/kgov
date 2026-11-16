@@ -141,6 +141,33 @@ def test_mock_registry_loads_disk_fixture():
         assert latest["version"] == 2
 
 
+def test_mock_registry_tolerates_junk_version_entries():
+    """Junk version entries (ints, strings, lists, None, junk-typed
+    id/version/compatibility values) must not crash the mock accessors —
+    they are dropped, and unparseable int fields fall back to defaults."""
+    reg = MockRegistry({
+        "subjects": {
+            "junked": [None, 42, "nope", [1], {"junk": True},
+                       {"id": {"x": 1}, "version": 1, "compatibility": "BACKWARD"}],
+            "ok": [{"id": 3, "version": 1, "schema": "s3"}],
+        }
+    })
+    assert reg.list_subjects() == ["junked", "ok"]
+    # non-dict entries are ignored; both dict entries survive (one without a
+    # version key falls back to its enumeration slot 1, the other has version 1)
+    assert reg.versions("junked") == [1, 1]
+    info = reg.version("junked", "latest")
+    assert info["version"] == 1
+    assert info["id"] is None  # junk id falls back to None
+    assert info["compatibility"] == "BACKWARD"
+    assert reg.compatibility_level("junked") == "BACKWARD"
+    assert reg.schema_by_id(3) == "s3"
+    # a malformed subjects container (e.g. a bare list) must not crash __init__
+    reg2 = MockRegistry({"subjects": [1, 2]})
+    assert reg2.list_subjects() == []
+    assert reg2.compatibility_level(None) == "BACKWARD"
+
+
 def test_set_fixture_swap(server):
     client = server.client
     assert client.list_subjects() == ["orders-value", "payments-value"]

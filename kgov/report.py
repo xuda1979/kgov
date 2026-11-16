@@ -123,7 +123,9 @@ def build_topic_state(
     ts = TopicState(name=name)
     ts.owner = topic.get("owner") or "unknown"
     tags = topic.get("tags", [])
-    ts.tags = list(tags) if isinstance(tags, list) else []
+    # only string elements describe a tag; junk elements (ints, dicts, ...)
+    # would crash the CSV join below (TypeError) and are meaningless as tags
+    ts.tags = [t for t in tags if isinstance(t, str)] if isinstance(tags, list) else []
 
     def _to_int(value: Any, default: int) -> int:
         try:

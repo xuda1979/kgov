@@ -29,6 +29,29 @@ class MockRegistryError(RuntimeError):
     """The mock server refused to start (e.g. ephemeral port exhausted)."""
 
 
+def _as_int(value: Any, default: Any) -> Any:
+    """Best-effort int conversion; junk values fall back to ``default``."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+class _Unset:
+    """Sentinel marking "no usable value" distinct from None."""
+
+
+_UNSET = _Unset()
+
+
+def _version_entries(versions: Any) -> list[dict]:
+    """Keep only dict version entries; junk entries (ints, strings, lists,
+    None, ...) would crash ``.get()``/``int()`` in the accessors below."""
+    if not isinstance(versions, list):
+        return []
+    return [v for v in versions if isinstance(v, dict)]
+
+
 _JSON_HEADERS = {
     "Content-Type": "application/vnd.schemaregistry.v1+json, application/json",
     "Access-Control-Allow-Origin": "*",
@@ -151,8 +174,9 @@ class MockRegistry:
         self._fixture: dict[str, list[dict]] = {}
         if fixture:
             subjects = fixture.get("subjects", {})
-            for name, versions in subjects.items():
-                self._fixture[name] = list(versions or [])
+            if isinstance(subjects, dict):
+                for name, versions in subjects.items():
+                    self._fixture[name] = _version_entries(versions)
         self._server: Optional[ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
         self._bound_port: int = 0
@@ -208,8 +232,10 @@ class MockRegistry:
     def set_fixture(self, fixture: dict) -> None:
         """Swap the backing fixture (for multi-phase tests)."""
         self._fixture = {}
-        for name, versions in (fixture.get("subjects", {}) or {}).items():
-            self._fixture[name] = list(versions or [])
+        subjects = fixture.get("subjects", {})
+        if isinstance(subjects, dict):
+            for name, versions in subjects.items():
+                self._fixture[name] = _version_entries(versions)
 
     def add_subject(self, subject: str, *versions: dict) -> None:
         """Append a subject (or extend an existing one) with one or more versions."""
@@ -223,7 +249,7 @@ class MockRegistry:
         versions = self._fixture.get(subject)
         if versions is None:
             return None
-        return sorted(int(v.get("version", i)) for i, v in enumerate(versions, start=1))
+        return sorted(_as_int(v.get("version"), i) for i, v in enumerate(versions, start=1))
 
     def version(self, subject: str, version: Any = "latest") -> Optional[dict]:
         versions = self._fixture.get(subject)
@@ -232,19 +258,18 @@ class MockRegistry:
         if version == "latest":
             info = versions[-1]
         else:
-            try:
-                target = int(version)
-            except (TypeError, ValueError):
+            target = _as_int(version, _UNSET)
+            if target is _UNSET:
                 return None
             info = next(
-                (v for v in versions if int(v.get("version", -1)) == target), None
+                (v for v in versions if _as_int(v.get("version"), -1) == target), None
             )
             if info is None:
                 return None
         return {
             "subject": subject,
-            "version": int(info.get("version", len(versions))),
-            "id": int(info["id"]) if "id" in info else None,
+            "version": _as_int(info.get("version"), len(versions)),
+            "id": _as_int(info["id"], None) if "id" in info else None,
             "compatibility": info.get("compatibility"),
             "schema": json.dumps(info.get("schema"), ensure_ascii=False),
         }
@@ -264,6 +289,6 @@ class MockRegistry:
     def schema_by_id(self, schema_id: int) -> Optional[Any]:
         for versions in self._fixture.values():
             for v in versions:
-                if int(v.get("id", -1)) == int(schema_id):
+                if _as_int(v.get("id"), -1) == _as_int(schema_id, -1):
                     return v.get("schema")
         return None
