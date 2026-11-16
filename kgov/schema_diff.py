@@ -468,9 +468,12 @@ def _js_diff(a: Any, b: Any, path: str = "", results: Optional[list] = None) -> 
         add(CompatibilityKind.ADDITIVE, path,
             f"accepted types widened: {sorted(sa)} → {sorted(sb)}")
 
-    # required arrays
-    ra = {p for p in (a.get("required") or []) if isinstance(p, str)}
-    rb = {p for p in (b.get("required") or []) if isinstance(p, str)}
+    # required arrays — only a list describes property names; junk values
+    # (ints, strings, dicts, ...) must not crash iteration below
+    a_req = a.get("required") if isinstance(a.get("required"), list) else []
+    b_req = b.get("required") if isinstance(b.get("required"), list) else []
+    ra = {p for p in a_req if isinstance(p, str)}
+    rb = {p for p in b_req if isinstance(p, str)}
     for prop in ra - rb:
         add(CompatibilityKind.ADDITIVE, _join(path, prop),
             f"property no longer required: `{prop}`")
@@ -512,8 +515,10 @@ def _js_diff(a: Any, b: Any, path: str = "", results: Optional[list] = None) -> 
             if isinstance(v, (dict, list)):
                 return json.dumps(v, sort_keys=True, default=_printable)
             return repr(v)
-        a_enum = {_enum_key(v): v for v in a.get("enum", [])}
-        b_enum = {_enum_key(v): v for v in b.get("enum", [])}
+        # only a list of allowed values describes an enum; junk values
+        # (ints, dicts, strings, ...) must not crash iteration below
+        a_enum = {_enum_key(v): v for v in (a.get("enum", []) if isinstance(a.get("enum"), list) else [])}
+        b_enum = {_enum_key(v): v for v in (b.get("enum", []) if isinstance(b.get("enum"), list) else [])}
         for key, v in a_enum.items():
             if key not in b_enum:
                 add(CompatibilityKind.BREAKING, path,

@@ -258,6 +258,42 @@ def test_json_type_list_junk_members_tolerated():
     assert rep.kind in (CompatibilityKind.NON_BREAKING, CompatibilityKind.ADDITIVE)
 
 
+def test_json_required_non_list_junk_tolerated():
+    """A JSON Schema whose `required` value is non-list junk (int, str, dict)
+    must not crash on iteration; only list entries contribute property names."""
+    old = {"$schema": "http://json-schema.org/draft-07/schema#",
+           "type": "object", "properties": {"a": {"type": "string"}}}
+    for junk in (5, None, "id", {"x": 1}, True):
+        new = {"$schema": "http://json-schema.org/draft-07/schema#",
+               "type": "object", "required": junk,
+               "properties": {"a": {"type": "string"}}}
+        rep = diff_json_schema(_schema(old), _schema(new))
+        assert rep.kind in (CompatibilityKind.NON_BREAKING, CompatibilityKind.ADDITIVE)
+
+
+def test_json_enum_non_list_junk_tolerated():
+    """A JSON Schema whose `enum` value is non-list junk (int, None, bool,
+    dict) must not crash on iteration; only list values describe allowed
+    entries. A junk enum carries no usable entries, so it is treated as
+    absent: no changes against an enum-less old schema, and the previously
+    allowed values reported as removed against a real old enum."""
+    old = {"$schema": "http://json-schema.org/draft-07/schema#", "type": "string"}
+    for junk in (5, None, True, {"x": 1}, "str"):
+        new = {"$schema": "http://json-schema.org/draft-07/schema#",
+               "type": "string", "enum": junk}
+        rep = diff_json_schema(_schema(old), _schema(new))
+        assert rep.kind == CompatibilityKind.NON_BREAKING
+
+    old2 = {"$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "string", "enum": ["a", "b"]}
+    new2 = {"$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "string", "enum": 5}
+    rep2 = diff_json_schema(_schema(old2), _schema(new2))
+    assert rep2.kind == CompatibilityKind.BREAKING
+    msgs = " ".join(r["message"] for r in rep2.results)
+    assert "enum value removed" in msgs
+
+
 def test_json_junk_bounds_tolerated():
     """Non-numeric bound values (string vs int) in minLength/minItems must not
     crash on `>` between mismatched types; numeric tightening still works."""
