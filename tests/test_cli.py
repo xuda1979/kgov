@@ -152,6 +152,19 @@ def test_check_non_utf8_rules_exit_3(tmp_path, capsys):
     assert "bad rules config" in capsys.readouterr().err
 
 
+def test_check_non_numeric_range_bound_exit_3(tmp_path, capsys):
+    """A rules config with a non-numeric range bound must exit 3 cleanly,
+    not crash with a raw ValueError from float() (exit 1)."""
+    bad = tmp_path / "rules.yaml"
+    bad.write_text("version: 1\ntopic: payments\nfields:\n"
+                   "  amount_cents:\n    type: integer\n"
+                   "    range: {minimum: abc}\n", encoding="utf-8")
+    code = main(["check", "--config", str(bad),
+                 "--messages", str(FIXTURES / "messages" / "payments_messages.json")])
+    assert code == 3
+    assert "bad rules config" in capsys.readouterr().err
+
+
 def test_check_non_utf8_messages_exit_3(tmp_path, capsys):
     """check --messages with invalid UTF-8 must exit 3 cleanly."""
     bad = tmp_path / "msgs.json"

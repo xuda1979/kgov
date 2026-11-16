@@ -106,6 +106,16 @@ def test_invalid_regex_rejected():
         build_ruleset({"fields": {"x": {"pattern": "["}}})
 
 
+@pytest.mark.parametrize("bound", ["abc", None, [], {}])
+def test_non_numeric_range_bounds_rejected(bound):
+    """A non-numeric range bound (e.g. "abc", null, a list) is a config
+    error, not a raw ValueError from float() (RuleFieldConfigError subclasses
+    RulesConfigError, which cmd_check maps to a clean exit 3)."""
+    with pytest.raises(RuleFieldConfigError, match="range"):
+        build_ruleset({"fields": {"x": {"type": "integer",
+                                        "range": {"minimum": bound}}}})
+
+
 def test_validate_clean_message():
     rs = _rs()
     msg = Message(

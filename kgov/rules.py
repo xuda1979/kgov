@@ -165,7 +165,14 @@ def _merge_fields(rs: RuleSet, fields: Any, rule_name: str) -> None:
             for key in ("minimum", "maximum"):
                 if key in rng:
                     v = rng[key]
-                    bounds[key] = float(v) if not isinstance(v, bool) else v
+                    try:
+                        bounds[key] = float(v) if not isinstance(v, bool) else v
+                    except (TypeError, ValueError) as exc:
+                        # non-numeric bound (e.g. "abc") is a config error,
+                        # not a raw ValueError traceback
+                        raise RuleFieldConfigError(
+                            f"field '{fname}': range {key} must be numeric, got {v!r}"
+                        ) from exc
             if not bounds:
                 raise RuleFieldConfigError(f"field '{fname}': range needs minimum/maximum")
             check.range = bounds
