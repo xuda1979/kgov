@@ -73,6 +73,24 @@ def test_load_rules_yaml_invalid():
         load_rules_yaml("{ unclosed")
 
 
+def test_load_rules_file_invalid_utf8_rejected(tmp_path):
+    """A rules file with non-UTF-8 bytes must raise a clean RulesConfigError,
+    not leak a UnicodeDecodeError traceback."""
+    path = tmp_path / "rules.yaml"
+    path.write_bytes(b"{topic: \xff\xfe}")
+    with pytest.raises(RulesConfigError, match="not valid UTF-8"):
+        load_rules_file(path)
+
+
+def test_messages_fixture_invalid_utf8_rejected(tmp_path):
+    """A messages fixture with non-UTF-8 bytes must raise a clean
+    RulesConfigError, not a raw UnicodeDecodeError."""
+    path = tmp_path / "msgs.json"
+    path.write_bytes(b'{"messages": \xff\xfe[]}')
+    with pytest.raises(RulesConfigError, match="not valid UTF-8"):
+        list(iter_messages_from_json(path))
+
+
 def test_unknown_type_rejected():
     with pytest.raises(UnknownFieldTypeError):
         build_ruleset({"fields": {"x": {"type": "datetime"}}})

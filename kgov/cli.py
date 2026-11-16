@@ -85,6 +85,8 @@ def _load_json_or_exit(path: str):
         raise CliError(f"file not found: {path}") from exc
     except IsADirectoryError as exc:
         raise CliError(f"not a file: {path}") from exc
+    except UnicodeDecodeError as exc:
+        raise CliError(f"not valid UTF-8: {path}") from exc
     except json.JSONDecodeError as exc:
         raise CliError(f"invalid JSON in {path}: {exc}") from exc
 

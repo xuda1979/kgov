@@ -176,3 +176,12 @@ def test_topics_fixture_non_list_raises_value_error(tmp_path):
             topics_fixture=fixture,
             now=NOW,
         )
+
+
+def test_non_utf8_fixture_raises_value_error(tmp_path):
+    """A fixture file with invalid UTF-8 must fail with a clean ValueError,
+    not a raw UnicodeDecodeError."""
+    fixture = tmp_path / "topics_bad.json"
+    fixture.write_bytes(b'\xff\xfe{"topics": []}')
+    with pytest.raises(ValueError, match="not valid UTF-8"):
+        build_governance_report(topics_fixture=fixture, now=NOW)

@@ -95,7 +95,10 @@ def load_rules_yaml(text: str) -> RuleSet:
 
 
 def load_rules_file(path: str | Path) -> RuleSet:
-    text = Path(path).read_text(encoding="utf-8")
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise RulesConfigError(f"{path}: file is not valid UTF-8") from exc
     return load_rules_yaml(text)
 
 
@@ -388,9 +391,11 @@ def iter_messages_from_json(path: str | Path, topic: Optional[str] = None) -> It
 
         { "messages": [ {"value": {...}} ] }
     """
-    data = Path(path).read_text(encoding="utf-8")
     try:
+        data = Path(path).read_text(encoding="utf-8")
         root = json.loads(data)
+    except UnicodeDecodeError as exc:
+        raise RulesConfigError(f"{path}: file is not valid UTF-8") from exc
     except json.JSONDecodeError as exc:
         raise RulesConfigError(f"invalid message fixture JSON: {exc}") from exc
 

@@ -140,6 +140,39 @@ def test_check_scalar_messages_fixture_exit_3(tmp_path, capsys):
     assert "bad message fixture" in capsys.readouterr().err
 
 
+def test_check_non_utf8_rules_exit_3(tmp_path, capsys):
+    """check --config with invalid UTF-8 must exit 3 with a clean error,
+    not leak an uncaught UnicodeDecodeError."""
+    bad = tmp_path / "rules.yaml"
+    bad.write_bytes(b"{topic: \xff\xfe}")
+    rules = FIXTURES / "rules" / "rules_scale.yaml"
+    code = main(["check", "--config", str(bad), "--messages",
+                 str(FIXTURES / "messages" / "payments_messages.json")])
+    assert code == 3
+    assert "bad rules config" in capsys.readouterr().err
+
+
+def test_check_non_utf8_messages_exit_3(tmp_path, capsys):
+    """check --messages with invalid UTF-8 must exit 3 cleanly."""
+    bad = tmp_path / "msgs.json"
+    bad.write_bytes(b'{"messages": \xff\xfe[]}')
+    rules = FIXTURES / "rules" / "rules_scale.yaml"
+    code = main(["check", "--config", str(rules), "--messages", str(bad)])
+    assert code == 3
+    assert "bad message fixture" in capsys.readouterr().err
+
+
+def test_schema_diff_non_utf8_exit_3(tmp_path, capsys):
+    """schema-diff --before with a non-UTF-8 file must exit 3 cleanly, not a
+    raw UnicodeDecodeError traceback."""
+    bad = tmp_path / "bad.json"
+    bad.write_bytes(b'\xff\xfe{"type": "record"}')
+    code = main(["schema-diff", "--before", str(bad),
+                 "--after", str(FIXTURES / "schemas" / "v1.json")])
+    assert code == 3
+    assert "not valid UTF-8" in capsys.readouterr().err
+
+
 def test_check_broker_scan_failure_exit_3(capsys, monkeypatch):
     """A broker scan that fails (unreachable cluster) must exit 3 with a clean
     error — never pass the gate with zero violations."""
@@ -205,6 +238,36 @@ def test_report_missing_registry_or_groups_exit_3(capsys):
     code = main(["report", "--topics", topics, "--groups", "/no/groups.json"])
     assert code == 3
     assert "--groups file missing" in capsys.readouterr().err
+
+
+def test_report_non_utf8_rules_exit_3(tmp_path, capsys):
+    """report --rules with a non-UTF-8 file must exit 3 cleanly."""
+    bad = tmp_path / "rules.yaml"
+    bad.write_bytes(b"{topic: \xff\xfe}")
+    code = main(["report", "--topics", str(FIXTURES / "topics" / "topics.json"),
+                 "--rules", str(bad),
+                 "--messages", str(FIXTURES / "messages" / "payments_messages.json")])
+    assert code == 3
+    assert "bad rules/messages" in capsys.readouterr().err
+
+
+def test_report_non_utf8_topics_exit_3(tmp_path, capsys):
+    """report --topics with a non-UTF-8 file must exit 3 cleanly."""
+    bad = tmp_path / "topics.json"
+    bad.write_bytes(b'\xff\xfe{"topics": []}')
+    code = main(["report", "--topics", str(bad)])
+    assert code == 3
+    assert "not valid UTF-8" in capsys.readouterr().err
+
+
+def test_report_non_utf8_violations_exit_3(tmp_path, capsys):
+    """report --violations with a non-UTF-8 file must exit 3 cleanly."""
+    bad = tmp_path / "vio.json"
+    bad.write_bytes(b'\xff\xfe[]')
+    code = main(["report", "--topics", str(FIXTURES / "topics" / "topics.json"),
+                 "--violations", str(bad)])
+    assert code == 3
+    assert "not valid UTF-8" in capsys.readouterr().err
 
 
 def test_report_check_directory_as_file_exit_3(tmp_path, capsys):

@@ -33,7 +33,10 @@ from .model import now_utc_iso
 
 
 def _read_json(path: str | Path) -> Any:
-    data = Path(path).read_text(encoding="utf-8")
+    try:
+        data = Path(path).read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"{path}: fixture is not valid UTF-8") from exc
     try:
         return json.loads(data)
     except json.JSONDecodeError as exc:
