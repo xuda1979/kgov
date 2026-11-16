@@ -1,0 +1,3120 @@
+Kafka-Govern V1.0
+# ===== File: kgov/__init__.py =====
+"""kgov — Kafka topic governance assistant: schema diff + dirty-data rules.
+
+A lightweight, self-hosted Confluent slice for small/medium teams running
+Kafka + Schema Registry. Operates fully offline via fixtures when no real
+broker/registry is reachable.
+"""
+
+__version__ = "0.1.0"
+# ===== File: kgov/model.py =====
+"""Shared data model for kgov.
+
+Kept dependency-free (only stdlib + dataclasses) so higher-level modules
+can import it without pulling in avro/jsonschema.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+
+def now_utc_iso() -> str:
+    """Return current UTC time as an ISO-8601 string."""
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def json_default(obj: Any) -> Any:
+    """json.dumps default for dataclass/decimal/bytes values."""
+    if isinstance(obj, (bytes, bytearray)):
+        try:
+            return obj.decode("utf-8")
+        except UnicodeDecodeError:
+            return obj.hex()
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    if hasattr(obj, "isoformat"):
+        return obj.isoformat()
+    if isinstance(obj, (int, float)):
+        try:
+            f = float(obj)
+            if not math.isfinite(f):
+                return str(obj)
+        except (TypeError, ValueError):
+            pass
+    if hasattr(obj, "to_dict"):
+        return obj.to_dict()
+第 1 页
+Kafka-Govern V1.0
+    if hasattr(obj, "__dict__"):
+        return vars(obj)
+    return repr(obj)
+
+
+# ---------------------------------------------------------------------------
+# Schema diff
+# ---------------------------------------------------------------------------
+
+class SchemaFormat:
+    AVRO = "avro"
+    JSON = "json"  # JSON Schema
+
+
+class CompatibilityKind:
+    BREAKING = "Breaking"
+    NON_BREAKING = "Non-Breaking"
+    ADDITIVE = "Additive"
+
+    ALL = (BREAKING, NON_BREAKING, ADDITIVE)
+
+
+@dataclass(frozen=True)
+class DiffResult:
+    kind: str            # CompatibilityKind
+    path: str            # dot path within the schema, "" = root
+    message: str         # human readable explanation
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class SchemaDiffReport:
+    format: str                     # SchemaFormat
+    subject: str
+    before_version: int
+    after_version: int
+    before_id: Optional[int] = None
+    after_id: Optional[int] = None
+    kind: str = CompatibilityKind.ADDITIVE  # overall classification
+    results: list[dict] = field(default_factory=list)
+    generated_at: str = field(default_factory=now_utc_iso)
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        d["compatible"] = self.kind != CompatibilityKind.BREAKING
+        return d
+
+    def to_markdown(self) -> str:
+第 2 页
+Kafka-Govern V1.0
+        lines = [
+            f"# Schema diff — `{self.subject}`",
+            "",
+            f"- Format: **{self.format}**",
+            f"- Version {self.before_version} → {self.after_version}",
+            f"- Compatibility: **{self.kind}**"
+            + (" (compatible)" if self.kind != CompatibilityKind.BREAKING else " (INCOMPATIBLE)"),
+            "",
+            "## Changes",
+            "",
+        ]
+        if not self.results:
+            lines.append("_No structural changes detected._")
+            return "\n".join(lines)
+        for r in self.results:
+            icon = {"Breaking": "-", "Non-Breaking": "~", "Additive": "+"}.get(r.get("kind"), "?")
+            path = r.get("path") or "(root)"
+            lines.append(f"- {icon} **{r['kind']}** `{path}` — {r['message']}")
+        return "\n".join(lines)
+# ===== File: kgov/rules_errors.py =====
+"""Error types for the dirty-data rules DSL."""
+
+
+class RulesConfigError(ValueError):
+    """Configuration-level error (bad YAML, missing keys)."""
+
+
+class RuleFieldConfigError(RulesConfigError):
+    """A single field spec is malformed."""
+
+
+class UnknownFieldTypeError(RulesConfigError):
+    """A field declares an unsupported 'type'."""
+# ===== File: kgov/broker.py =====
+"""Real Kafka broker client (optional, P3).
+
+Gated behind the ``broker`` extra — imports ``confluent_kafka`` lazily so the
+core package stays usable offline without it. Provides three read paths that
+mirror the fixture inputs used by the rest of kgov:
+
+- ``list_topics``            → topic metadata (partitions, replication factor)
+- ``consumer_groups``        → per-topic consumer-group state
+- ``read_topic``             → messages (key/value/partition/offset) for rule checks
+
+Message values are decoded as JSON records first; when that fails and a
+``SchemaRegistryClient`` is supplied, values in the Confluent wire format
+(``0x00`` magic byte + big-endian schema id + Avro binary payload) are decoded
+with the registered Avro schema. Any residual bytes fall back to raw text /
+hex so the scan never aborts on an opaque payload.
+"""
+第 3 页
+Kafka-Govern V1.0
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Callable, Optional
+
+
+@dataclass
+class BrokerMessage:
+    """A raw message read from a real broker (confluent_kafka consumer)."""
+
+    topic: str
+    partition: int
+    offset: int
+    key: Any
+    value: Any
+    timestamp_ms: Optional[int] = None
+    headers: dict = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return {
+            "topic": self.topic,
+            "partition": self.partition,
+            "offset": self.offset,
+            "key": _json_safe(self.key),
+            "value": self.value,
+            "timestamp": self.timestamp_ms,
+            "headers": self.headers,
+        }
+
+
+def _json_safe(v: Any) -> Any:
+    if isinstance(v, bytes):
+        try:
+            return v.decode("utf-8")
+        except UnicodeDecodeError:
+            return {"$bytes": v.hex()}
+    return v
+
+
+class _UNDECODED:
+    """Sentinel: raw bytes did not look like any supported encoding."""
+
+
+def _decode_value(
+    raw: Optional[bytes],
+    decoder: Optional[Callable[[bytes], Any]] = None,
+) -> Any:
+    """Decode a Kafka record value: JSON object preferred, then Avro wire
+    format (if a ``decoder`` is supplied), raw text / hex as a last resort."""
+第 4 页
+Kafka-Govern V1.0
+    if raw is None:
+        return None
+    import json
+
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        pass
+    if decoder is not None:
+        decoded = decoder(raw)
+        if decoded is not _UNDECODED:
+            return decoded
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return {"$bytes": raw.hex()}
+
+
+CONFLUENT_MAGIC = b"\x00"
+CONFLUENT_ID_BYTES = 4
+CONFLUENT_HEADER = 5  # magic byte + 4-byte big-endian schema id
+
+
+class AvroRecordDecoder:
+    """Decode Confluent-wire Avro payloads via a Schema Registry.
+
+    Wire layout is ``0x00`` + 4-byte big-endian schema id + Avro binary datum.
+    The schema is fetched from the registry (cached by id) and used to read the
+    datum. Bytes that do not match the wire format, schemas that are not
+    records, or malformed datums all return :data:`_UNDECODED` so the caller
+    falls through to its text / hex fallback.
+    """
+
+    def __init__(
+        self,
+        client: "SchemaRegistryClient",
+        decoder_factory: Optional[Callable] = None,
+    ):
+        self._client = client
+        self._schemas: dict[int, Any] = {}
+        self._decoder_factory = decoder_factory or _default_decoder_factory
+
+    def __call__(self, raw: bytes) -> Any:
+        if len(raw) <= CONFLUENT_HEADER or not raw.startswith(CONFLUENT_MAGIC):
+            return _UNDECODED
+        schema_id = int.from_bytes(raw[1:CONFLUENT_HEADER], byteorder="big")
+        try:
+            reader = self._reader_for(schema_id)
+        except Exception:
+            return _UNDECODED
+第 5 页
+Kafka-Govern V1.0
+        if reader is None:
+            return _UNDECODED
+        try:
+            return self._decoder_factory(reader, raw[CONFLUENT_HEADER:])
+        except Exception:
+            return _UNDECODED
+
+    def _reader_for(self, schema_id: int) -> Optional["_RecordReader"]:
+        if schema_id not in self._schemas:
+            info = self._client.get_schema_by_id(schema_id)
+            parsed = info["schema"]
+            if not isinstance(parsed, dict) or parsed.get("type") != "record":
+                self._schemas[schema_id] = None
+                return None
+            self._schemas[schema_id] = parsed
+        parsed = self._schemas.get(schema_id)
+        if parsed is None:
+            return None
+        import json as _json
+
+        from avro import schema as avro_schema
+
+        return _RecordReader(avro_schema.parse(_json.dumps(parsed, ensure_ascii=False)))
+
+
+class _RecordReader:
+    def __init__(self, schema: Any):
+        self._schema = schema
+
+    def read(self, payload: bytes) -> Any:
+        import io
+
+        from avro import io as avro_io
+
+        return avro_io.DatumReader(self._schema).read(
+            avro_io.BinaryDecoder(io.BytesIO(payload))
+        )
+
+
+def _default_decoder_factory(reader: "_RecordReader", payload: bytes) -> Any:
+    return reader.read(payload)
+
+
+class NeedsBrokerError(ImportError):
+    """Raised when a broker feature is used without confluent-kafka installed."""
+
+
+def _require_kafka() -> None:
+    try:
+        import confluent_kafka  # noqa: F401
+第 6 页
+Kafka-Govern V1.0
+    except ImportError as exc:  # pragma: no cover - env-dependent
+        raise NeedsBrokerError(
+            "confluent-kafka is required for broker features; "
+            "install with `pip install 'kgov[broker]'`"
+        ) from exc
+
+
+def list_topics(bootstrap: str, timeout: float = 10.0) -> list[dict]:
+    """Return topic metadata: [{name, partitions, replication_factor, owner}]."""
+    _require_kafka()
+    from confluent_kafka.admin import AdminClient
+
+    admin = AdminClient(
+        {"bootstrap.servers": bootstrap, "log_level": 0, "socket.timeout.ms": int(timeout * 1000)}
+    )
+    md = admin.list_topics(timeout=timeout)
+    out: list[dict] = []
+    for name, tmeta in sorted(md.topics.items()):
+        if tmeta.error is not None:
+            continue
+        partitions = len(tmeta.partitions)
+        rf = max(
+            (
+                len(p.replicas)
+                for p in tmeta.partitions.values()
+                if p.replicas is not None
+            ),
+            default=0,
+        )
+        out.append(
+            {
+                "name": name,
+                "partitions": partitions,
+                "replication_factor": rf,
+                "owner": "",
+                "tags": [],
+                "latest_message_at": None,
+            }
+        )
+    return out
+
+
+def consumer_groups(bootstrap: str, timeout: float = 10.0) -> dict[str, dict]:
+    """Per-topic consumer-group membership, mirroring the offline fixture shape.
+
+    Returns ``{topic: {"group": ..., "consumer_count": ..., "last_consumed_at": None}}``.
+    Brokers do not expose commit timestamps through the admin API, so
+    ``last_consumed_at`` stays None and the report layer falls back to the
+    producer-grace staleness rule.
+    """
+第 7 页
+Kafka-Govern V1.0
+    _require_kafka()
+    from confluent_kafka.admin import AdminClient
+
+    admin = AdminClient({"bootstrap.servers": bootstrap})
+    out: dict[str, dict] = {}
+    try:
+        groups = admin.list_consumer_groups(timeout=timeout)
+    except Exception:
+        return out
+
+    valid = [g for g in groups if g.state in ("STABLE", "EMPTY")]
+    if not valid:
+        return out
+
+    try:
+        descs = admin.describe_consumer_groups([g.group_id for g in valid], timeout=timeout)
+    except Exception:
+        return out
+
+    for desc in descs:
+        members = list(getattr(desc, "members", None) or [])
+        consumers = sum(1 for _ in members)
+        topic_members: dict[str, int] = {}
+        for member in members:
+            try:
+                assignment = list(member.assignment or [])
+            except Exception:
+                assignment = []
+            for tpart in assignment:
+                topic = getattr(tpart, "topic", None)
+                if topic:
+                    topic_members[topic] = topic_members.get(topic, 0) + 1
+        for topic, count in topic_members.items():
+            out.setdefault(topic, {
+                "group": desc.group_id,
+                "consumer_count": max(count, consumers),
+                "last_consumed_at": None,
+            })
+    return out
+
+
+def read_topic(
+    bootstrap: str,
+    topic: str,
+    *,
+    group_id: str = "kgov-scan",
+    n: Optional[int] = None,
+    timeout: float = 10.0,
+    value_decoder: Optional[Callable[[bytes], Any]] = None,
+) -> list[BrokerMessage]:
+第 8 页
+Kafka-Govern V1.0
+    """Read up to ``n`` messages from a topic (oldest first).
+
+    A fresh consumer with ``auto.offset.reset=earliest`` runs under a unique
+    group id per call so concurrent scans do not collide on commits. Messages
+    are never committed. If ``value_decoder`` is supplied it is consulted for
+    values that are not valid JSON (e.g. an :class:`AvroRecordDecoder`).
+    """
+    _require_kafka()
+    from confluent_kafka import Consumer, KafkaError, KafkaException
+
+    unique_group = f"{group_id}-{id(object()):x}"
+    conf = {
+        "bootstrap.servers": bootstrap,
+        "group.id": unique_group,
+        "auto.offset.reset": "earliest",
+        "enable.auto.commit": False,
+    }
+    consumer = Consumer(conf)
+    out: list[BrokerMessage] = []
+    try:
+        consumer.subscribe([topic])
+        deadline = _now_ms() + timeout * 1000
+        while _now_ms() < deadline:
+            msg = consumer.poll(timeout=5.0)
+            if msg is None:
+                continue
+            if msg.error():
+                if msg.error().code() == KafkaError._PARTITION_EOF:
+                    continue
+                if msg.error().code() == KafkaError._TRANSPORT:
+                    raise KafkaException(msg.error())
+                continue
+            ts = msg.timestamp()
+            out.append(
+                BrokerMessage(
+                    topic=msg.topic(),
+                    partition=msg.partition(),
+                    offset=msg.offset(),
+                    key=_json_safe(msg.key()),
+                    value=_decode_value(msg.value(), value_decoder),
+                    timestamp_ms=ts[1] if ts else None,
+                    headers=dict(msg.headers() or []),
+                )
+            )
+            if n is not None and len(out) >= n:
+                break
+    finally:
+        consumer.close()
+    return out
+
+第 9 页
+Kafka-Govern V1.0
+
+def _now_ms() -> int:
+    import time
+
+    return int(time.time() * 1000)
+# ===== File: kgov/mock_registry.py =====
+"""Local mock Schema Registry — serves the Confluent wire on loopback.
+
+Useful for offline development / tests without a live registry::
+
+    server = MockRegistry(registry_fixture={"subjects": {...}})
+    server.start()
+    client = SchemaRegistryClient(server.base_url)
+    ...
+    server.stop()
+
+Fixture shape is the same JSON the report module consumes
+(``{"subjects": {"<subject>": [{"id", "version", "compatibility",
+"schema"}, ...]}}``). The server is read-only (no registration endpoint).
+"""
+
+from __future__ import annotations
+
+import json
+import socket
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any, Optional
+from urllib.parse import parse_qs, unquote, urlparse
+
+from .registry import SchemaRegistryClient
+
+
+class MockRegistryError(RuntimeError):
+    """The mock server refused to start (e.g. ephemeral port exhausted)."""
+
+
+_JSON_HEADERS = {
+    "Content-Type": "application/vnd.schemaregistry.v1+json, application/json",
+    "Access-Control-Allow-Origin": "*",
+}
+
+
+class RegistryHandler(BaseHTTPRequestHandler):
+    registry: "MockRegistry"
+
+    def log_message(self, fmt: str, *args: Any) -> None:
+        return  # keep the test output quiet
+
+    # -- helpers ---------------------------------------------------------
+第 10 页
+Kafka-Govern V1.0
+
+    def _reply(self, code: int, payload: Any) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Length", str(len(body)))
+        for k, v in _JSON_HEADERS.items():
+            self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _error(self, code: int, message: str, error_code: int = 40401) -> None:
+        self._reply(code, {"error_code": error_code, "message": message})
+
+    def _path_parts(self) -> list[str]:
+        path = unquote(urlparse(self.path).path)
+        return [p for p in path.split("/") if p]
+
+    def _subject_from_path(self) -> Optional[str]:
+        parts = self._path_parts()
+        # /subjects/{subject}/versions[/{version}]
+        if len(parts) >= 2 and parts[0] == "subjects":
+            return parts[1]
+        if len(parts) >= 2 and parts[0] in ("config", "compatibility"):
+            return parts[1]
+        return None
+
+    # -- routing ----------------------------------------------------------
+
+    def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
+        parts = self._path_parts()
+        if not parts:
+            self._reply(200, [])
+            return
+        head = parts[0]
+
+        if head == "subjects":
+            if len(parts) == 1:
+                self._reply(200, self.registry.list_subjects())
+                return
+            subject = parts[1]
+            if len(parts) == 3 and parts[2] == "versions":
+                # /subjects/{subject}/versions
+                versions = self.registry.versions(subject)
+                if versions is None:
+                    self._error(404, f"Subject '{subject}' not found.", 40401)
+                    return
+                self._reply(200, versions)
+                return
+            if len(parts) == 4 and parts[2] == "versions":
+                # /subjects/{subject}/versions/{version}
+第 11 页
+Kafka-Govern V1.0
+                version: Any = parts[3]
+                info = self.registry.version(subject, version)
+                if info is None:
+                    self._error(
+                        404,
+                        f"Version {version} not found for subject '{subject}'.",
+                        40402,
+                    )
+                    return
+                self._reply(200, info)
+                return
+
+        if head == "config":
+            subject = parts[1] if len(parts) > 1 else None
+            level = self.registry.compatibility_level(subject)
+            if level is None:
+                self._error(404, "Config not found.", 40401)
+                return
+            self._reply(200, {"compatibilityLevel": level})
+            return
+
+        if head == "schemas":
+            # /schemas/ids/{id}
+            if len(parts) >= 3 and parts[1] == "ids":
+                try:
+                    schema_id = int(parts[2])
+                except ValueError:
+                    self._error(404, "Schema not found.", 40403)
+                    return
+                schema = self.registry.schema_by_id(schema_id)
+                if schema is None:
+                    self._error(404, f"Schema {schema_id} not found.", 40403)
+                    return
+                self._reply(200, {"schema": json.dumps(schema, ensure_ascii=False)})
+                return
+
+        if head == "mode":
+            self._reply(200, {"mode": "READWRITE"})
+
+        self._error(404, f"No endpoint for {self.path}", 40401)
+
+    def do_POST(self) -> None:  # noqa: N802
+        # Read-only mock: registration endpoints are intentionally absent.
+        self._error(404, "Mock registry is read-only.", 40401)
+
+    def do_PUT(self) -> None:  # noqa: N802
+        self._error(405, "Method Not Allowed", 40501)
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        self._error(405, "Method Not Allowed", 40501)
+第 12 页
+Kafka-Govern V1.0
+
+
+class MockRegistry:
+    """An in-process Confluent-wire Schema Registry backed by a fixture dict."""
+
+    def __init__(self, fixture: dict | None = None):
+        self._fixture: dict[str, list[dict]] = {}
+        if fixture:
+            subjects = fixture.get("subjects", {})
+            for name, versions in subjects.items():
+                self._fixture[name] = list(versions or [])
+        self._server: Optional[ThreadingHTTPServer] = None
+        self._thread: Optional[threading.Thread] = None
+        self._bound_port: int = 0
+
+    # -- lifecycle ---------------------------------------------------------
+
+    def start(self, port: int = 0) -> str:
+        """Bind on loopback (0 => OS-assigned ephemeral port); return base URL."""
+        if self._server:
+            return self.base_url
+        handler = type("BoundHandler", (RegistryHandler,), {"registry": self})
+        try:
+            self._server = ThreadingHTTPServer(("127.0.0.1", port), handler)
+        except OSError as exc:
+            raise MockRegistryError(f"mock registry failed to bind: {exc}") from exc
+        self._bound_port = int(self._server.server_address[1])
+        self._thread = threading.Thread(
+            target=self._server.serve_forever, daemon=True, name="mock-registry"
+        )
+        self._thread.start()
+        return self.base_url
+
+    def stop(self) -> None:
+        if self._server is not None:
+            self._server.shutdown()
+            self._server.server_close()
+            self._server = None
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=5)
+            self._thread = None
+        self._bound_port = 0
+
+    def __enter__(self) -> "MockRegistry":
+        self.start()
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.stop()
+
+第 13 页
+Kafka-Govern V1.0
+    @property
+    def base_url(self) -> str:
+        if self._bound_port:
+            return f"http://127.0.0.1:{self._bound_port}"
+        return "http://127.0.0.1:0"
+
+    @property
+    def client(self) -> SchemaRegistryClient:
+        """A ready-to-use SchemaRegistryClient pointed at this server."""
+        return SchemaRegistryClient(self.base_url)
+
+    # -- data access (wired into the handler above) --------------------------
+
+    def set_fixture(self, fixture: dict) -> None:
+        """Swap the backing fixture (for multi-phase tests)."""
+        self._fixture = {}
+        for name, versions in (fixture.get("subjects", {}) or {}).items():
+            self._fixture[name] = list(versions or [])
+
+    def add_subject(self, subject: str, *versions: dict) -> None:
+        """Append a subject (or extend an existing one) with one or more versions."""
+        existing = self._fixture.setdefault(subject, [])
+        existing.extend(versions)
+
+    def list_subjects(self) -> list[str]:
+        return sorted(self._fixture.keys())
+
+    def versions(self, subject: str) -> Optional[list[int]]:
+        versions = self._fixture.get(subject)
+        if versions is None:
+            return None
+        return sorted(int(v.get("version", i)) for i, v in enumerate(versions, start=1))
+
+    def version(self, subject: str, version: Any = "latest") -> Optional[dict]:
+        versions = self._fixture.get(subject)
+        if not versions:
+            return None
+        if version == "latest":
+            info = versions[-1]
+        else:
+            try:
+                target = int(version)
+            except (TypeError, ValueError):
+                return None
+            info = next(
+                (v for v in versions if int(v.get("version", -1)) == target), None
+            )
+            if info is None:
+                return None
+        return {
+第 14 页
+Kafka-Govern V1.0
+            "subject": subject,
+            "version": int(info.get("version", len(versions))),
+            "id": int(info["id"]) if "id" in info else None,
+            "compatibility": info.get("compatibility"),
+            "schema": json.dumps(info.get("schema"), ensure_ascii=False),
+        }
+
+    def compatibility_level(self, subject: Optional[str]) -> Optional[str]:
+        if subject is None:
+            return "BACKWARD"
+        versions = self._fixture.get(subject)
+        if not versions:
+            return None
+        pending = [v.get("compatibility") for v in versions if v.get("compatibility")]
+        # Use the *newest* explicit compatibility marker, falling back to BACKWARD.
+        if pending:
+            return str(pending[-1])
+        return "BACKWARD"
+
+    def schema_by_id(self, schema_id: int) -> Optional[Any]:
+        for versions in self._fixture.values():
+            for v in versions:
+                if int(v.get("id", -1)) == int(schema_id):
+                    return v.get("schema")
+        return None
+# ===== File: kgov/registry.py =====
+"""Confluent-wire Schema Registry client + fixture conversion.
+
+Speaks the Confluent Schema Registry REST API with plain stdlib (urllib) so the
+core package stays broker-free::
+
+    GET /subjects                                  -> ["payments-value", ...]
+    GET /subjects/{subject}/versions               -> [1, 2, 3]
+    GET /subjects/{subject}/versions/{version}     -> {"subject", "version", "id", "schema"}
+    GET /subjects/{subject}/versions/latest
+    GET /config/{subject}                          -> {"compatibilityLevel": "BACKWARD"}
+    GET /schemas/ids/{id}                          -> {"schema": "..."}
+
+The exact schema payload on the wire is a JSON *string*; this module normalizes
+it to a parsed dict so the result is directly usable by :func:`kgov.report.build_governance_report`
+as a registry fixture (``{"subjects": {...}}``).
+"""
+
+from __future__ import annotations
+
+import json
+import urllib.error
+import urllib.request
+from typing import Any, Optional
+
+第 15 页
+Kafka-Govern V1.0
+
+class RegistryError(ValueError):
+    """Raised when a Schema Registry request fails (connect / HTTP / parse)."""
+
+
+def _parse_schema_string(schema: Any) -> Any:
+    """The Confluent wire returns schema as a JSON string; normalize to a dict."""
+    if schema is None:
+        return None
+    if isinstance(schema, (dict, list)):
+        return schema
+    try:
+        return json.loads(str(schema))
+    except json.JSONDecodeError:
+        # Not parseable as JSON — keep the raw string (e.g. a bare primitive).
+        return str(schema)
+
+
+class SchemaRegistryClient:
+    """Minimal read-only client for a Confluent-compatible Schema Registry."""
+
+    def __init__(self, base_url: str, token: Optional[str] = None, timeout: float = 10.0):
+        self.base_url = str(base_url).rstrip("/")
+        self.token = token
+        self.timeout = timeout
+        self._headers = {
+            "Accept": "application/vnd.schemaregistry.v1+json, application/json",
+        }
+        if token:
+            self._headers["Authorization"] = token
+
+    # ------------------------------------------------------------------
+    # HTTP plumbing
+    # ------------------------------------------------------------------
+
+    def _get(self, path: str) -> Any:
+        url = f"{self.base_url}{path}"
+        req = urllib.request.Request(url, headers=self._headers, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RegistryError(f"registry {exc.code} for {path}: {body}") from exc
+        except urllib.error.URLError as exc:
+            raise RegistryError(f"cannot reach {self.base_url}: {exc.reason}") from exc
+        except json.JSONDecodeError as exc:
+            raise RegistryError(f"registry returned invalid JSON for {path}: {exc}") from exc
+
+    def is_reachable(self) -> bool:
+第 16 页
+Kafka-Govern V1.0
+        try:
+            self.list_subjects()
+            return True
+        except RegistryError:
+            return False
+
+    # ------------------------------------------------------------------
+    # Confluent wire API
+    # ------------------------------------------------------------------
+
+    def list_subjects(self) -> list[str]:
+        data = self._get("/subjects")
+        if not isinstance(data, list):
+            raise RegistryError("registry /subjects did not return a list")
+        return [str(s) for s in data]
+
+    def get_versions(self, subject: str) -> list[int]:
+        data = self._get(f"/subjects/{_quote_path(subject)}/versions")
+        if not isinstance(data, list):
+            raise RegistryError(f"/subjects/{subject}/versions did not return a list")
+        try:
+            return sorted(int(v) for v in data)
+        except (TypeError, ValueError) as exc:
+            raise RegistryError(f"/subjects/{subject}/versions malformed: {data!r}") from exc
+
+    def get_version(self, subject: str, version: int | str = "latest") -> dict:
+        data = self._get(f"/subjects/{_quote_path(subject)}/versions/{version}")
+        if not isinstance(data, dict):
+            raise RegistryError(f"/subjects/{subject}/versions/{version} malformed")
+        compat = self._compatibility_level(subject)
+        return {
+            "id": data.get("id"),
+            "version": data.get("version", version),
+            "compatibility": compat,
+            "schema": _parse_schema_string(data.get("schema")),
+        }
+
+    def get_latest(self, subject: str) -> dict:
+        return self.get_version(subject, "latest")
+
+    def get_schema_by_id(self, schema_id: int) -> dict:
+        data = self._get(f"/schemas/ids/{int(schema_id)}")
+        if not isinstance(data, dict):
+            raise RegistryError(f"/schemas/ids/{schema_id} malformed")
+        return {"id": int(schema_id), "schema": _parse_schema_string(data.get("schema"))}
+
+    def _compatibility_level(self, subject: str) -> Optional[str]:
+        try:
+            data = self._get(f"/config/{_quote_path(subject)}")
+        except RegistryError:
+第 17 页
+Kafka-Govern V1.0
+            return None
+        level = data.get("compatibilityLevel") if isinstance(data, dict) else None
+        return str(level) if level else None
+
+    # ------------------------------------------------------------------
+    # kgov fixture conversion (report.py consumes this shape)
+    # ------------------------------------------------------------------
+
+    def to_fixture_dict(self) -> dict:
+        """Return the offline registry fixture shape ``{"subjects": {...}}``."""
+        subjects: dict[str, list[dict]] = {}
+        for subject in sorted(self.list_subjects()):
+            versions = []
+            for v in self.get_versions(subject):
+                info = self.get_version(subject, v)
+                versions.append({
+                    "id": info["id"],
+                    "version": info["version"],
+                    "compatibility": info["compatibility"],
+                    "schema": info["schema"],
+                })
+            subjects[subject] = versions
+        return {"subjects": subjects}
+
+
+def _quote_path(segment: str) -> str:
+    from urllib.parse import quote
+
+    return quote(str(segment), safe="")
+# ===== File: kgov/report.py =====
+"""Governance report: topic inventory + owners + staleness + violation counts.
+
+Fully offline. Backed by fixture inputs:
+
+- ``topics``  — list of ``{name, partitions, replication_factor, owner, tags[]}``
+- ``consumer_groups`` — list of ``{group, topics[], last_consumed_at (iso) / lag}``
+- ``messages`` per topic — to derive sane-but-optional violation counts
+  (alternatively a precomputed violation_count may be given directly).
+
+The final report is a list of rows, one per topic::
+
+    name, owner, tags, partitions, replication, schema_subject,
+    schema_version, schema_state (COMPATIBLE/PENDING/BREAKING/NONE),
+    latest_message_at, last_consumed_at, stale (bool), violation_count
+
+Staleness is evaluated against the current time when ``now`` is not provided.
+"""
+
+from __future__ import annotations
+
+第 18 页
+Kafka-Govern V1.0
+import json
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+from .model import now_utc_iso
+
+
+# ---------------------------------------------------------------------------
+# Input loading
+# ---------------------------------------------------------------------------
+
+
+def _read_json(path: str | Path) -> Any:
+    data = Path(path).read_text(encoding="utf-8")
+    try:
+        return json.loads(data)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{path}: invalid JSON fixture: {exc}") from exc
+
+
+@dataclass
+class StalenessSettings:
+    """Tunables determining the 'stale' flag."""
+
+    consumer_grace_seconds: int = 86400 * 3      # 3 days without a consumer read
+    producer_grace_seconds: int = 86400 * 2      # 2 days without a produced message
+    no_consumer_since_epoch: bool = False        # when there are no consumer groups at all
+
+
+def _parse_dt(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, (int, float)):
+        dt = datetime.fromtimestamp(value, tz=timezone.utc)
+    else:
+        try:
+            s = str(value)
+            if s.endswith("Z"):
+                s = s[:-1] + "+00:00"
+            dt = datetime.fromisoformat(s)
+        except (ValueError, TypeError):
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+第 19 页
+Kafka-Govern V1.0
+
+# ---------------------------------------------------------------------------
+# Report model
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class TopicState:
+    name: str
+    owner: str = "unknown"
+    tags: list[str] = field(default_factory=list)
+    partitions: int = 1
+    replication_factor: int = 1
+    schema_subject: Optional[str] = None
+    schema_version: Optional[int] = None
+    schema_state: str = "NONE"            # COMPATIBLE | ADDITIVE | BREAKING | PENDING | NONE
+    latest_message_at: Optional[str] = None
+    last_consumed_at: Optional[str] = None
+    stale: bool = False
+    violation_count: int = 0
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def build_topic_state(
+    topic: dict,
+    registry: dict,
+    groups: dict[str, dict],
+    rule_topic_violations: dict[str, int],
+    now: Optional[datetime] = None,
+    settings: Optional[StalenessSettings] = None,
+) -> TopicState:
+    """Derive a single topic's governance row from fixture inputs."""
+    settings = settings or StalenessSettings()
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+
+    name = topic["name"]
+    ts = TopicState(name=name)
+    ts.owner = topic.get("owner") or "unknown"
+    ts.tags = list(topic.get("tags", []))
+    ts.partitions = int(topic.get("partitions", 1))
+    ts.replication_factor = int(topic.get("replication_factor", 1))
+
+    # schema state from registry subject
+    subject = topic.get("schema_subject")
+    ts.schema_subject = subject
+    versions = registry.get("subjects", {}).get(subject, []) if subject else []
+第 20 页
+Kafka-Govern V1.0
+    if versions:
+        latest = versions[-1]
+        ts.schema_version = latest.get("version")
+        compat = latest.get("compatibility")
+        ts.schema_state = {"COMPATIBLE": "COMPATIBLE", "BACKWARD": "COMPATIBLE",
+                           "ADDITIVE": "ADDITIVE", "BREAKING": "BREAKING",
+                           "NONE": "NONE"}.get(compat, "COMPATIBLE") if compat else "COMPATIBLE"
+
+    # message + consumer timestamps
+    latest_msg = _parse_dt(topic.get("latest_message_at"))
+    ts.latest_message_at = latest_msg.isoformat() if latest_msg else None
+
+    group = groups.get(name) or {}
+    last_consumed = _parse_dt(group.get("last_consumed_at"))
+    ts.last_consumed_at = last_consumed.isoformat() if last_consumed else None
+
+    # staleness
+    if group is not None and last_consumed is not None:
+        consumed_delta = now - last_consumed
+        ts.stale = consumed_delta.total_seconds() > settings.consumer_grace_seconds
+    else:
+        # No consumer group known for the topic.
+        ts.stale = settings.no_consumer_since_epoch
+        if not ts.stale and latest_msg is not None:
+            produced_delta = now - latest_msg
+            ts.stale = produced_delta.total_seconds() > settings.producer_grace_seconds
+
+    ts.violation_count = int(rule_topic_violations.get(name, 0))
+    return ts
+
+
+# ---------------------------------------------------------------------------
+# Top-level report
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class GovernanceReport:
+    generated_at: str = field(default_factory=now_utc_iso)
+    total_topics: int = 0
+    topics: list[TopicState] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "generated_at": self.generated_at,
+            "total_topics": self.total_topics,
+            "topics": [t.to_dict() for t in self.topics],
+        }
+
+    def to_json(self) -> str:
+第 21 页
+Kafka-Govern V1.0
+        return json.dumps(self.to_dict(), indent=2, ensure_ascii=False)
+
+
+def build_governance_report(
+    topics_fixture: str | Path | list,
+    registry_fixture: Optional[str | Path | list] = None,
+    groups_fixture: Optional[str | Path | list] = None,
+    rule_violations: Optional[list] = None,
+    now: Optional[datetime] = None,
+) -> GovernanceReport:
+    """Build a full governance report from fixtures (plus optional violations)."""
+    topics = topics_fixture if isinstance(topics_fixture, list) else _read_json(topics_fixture)
+    if isinstance(topics, dict):
+        topics = topics.get("topics", [])
+
+    registry = {}
+    if registry_fixture:
+        registry = registry_fixture if isinstance(registry_fixture, dict) else _read_json(registry_fixture)
+
+    raw_groups = {}
+    if groups_fixture:
+        raw_groups = groups_fixture if isinstance(groups_fixture, dict) else _read_json(groups_fixture)
+    groups = raw_groups.get("groups") if isinstance(raw_groups, dict) and "groups" in raw_groups else raw_groups
+    if isinstance(groups, list):
+        groups = {g.get("topic", g.get("group")): g for g in groups}
+
+    # violation counts per topic
+    counts: dict[str, int] = {}
+    for vio in rule_violations or []:
+        topic = vio.get("topic") if isinstance(vio, dict) else getattr(vio, "topic", None)
+        if topic:
+            counts[topic] = counts.get(topic, 0) + 1
+
+    now = now or datetime.now(timezone.utc)
+    states = [
+        build_topic_state(t, registry, groups, counts, now=now)
+        for t in topics
+    ]
+    return GovernanceReport(total_topics=len(states), topics=states)
+
+
+# ---------------------------------------------------------------------------
+# CSV export
+# ---------------------------------------------------------------------------
+
+
+def report_to_csv(report: GovernanceReport) -> str:
+    import csv
+    import io
+
+第 22 页
+Kafka-Govern V1.0
+    buf = io.StringIO()
+    cols = [
+        "name", "owner", "tags", "partitions", "replication_factor",
+        "schema_subject", "schema_version", "schema_state",
+        "latest_message_at", "last_consumed_at", "stale", "violation_count",
+    ]
+    writer = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
+    writer.writeheader()
+    for t in report.topics:
+        row = t.to_dict()
+        row["tags"] = "|".join(t.tags)
+        writer.writerow(row)
+    return buf.getvalue()
+# ===== File: kgov/rules.py =====
+"""Dirty-data rules DSL and validation engine.
+
+Rules are declared in YAML or JSON with this shape::
+
+    version: 1
+    topic: payments                       # topic glob (default '*')
+    rules:
+      - name: "payments-constraints"
+        fields:
+          payment_id:
+            type: string
+            required: true
+            pattern: "^pay_"
+          amount_cents:
+            type: integer
+            required: true
+            range: {minimum: 0, maximum: 100000000}
+          currency:
+            type: string
+            pattern: "^[A-Z]{3}$"
+          status:
+            type: string
+            enum: [ACCEPTED, PENDING, REJECTED]
+          fee_cents:
+            type: integer
+            non_null: true
+            range: {minimum: 0}
+
+Supported field checks:
+
+- ``type``  — one of ``string|integer|number|boolean|array|object|record``
+  (record == object). Integers satisfy ``number``.
+- ``required`` — bool; if true the key must be present (missing counts as a
+  violation).
+- ``enum``  — list of allowed scalar values.
+- ``pattern`` — regex the string value must match.
+第 23 页
+Kafka-Govern V1.0
+- ``range``  — ``{minimum, maximum}`` numeric bounds (inclusive).
+- ``non_null`` — bool; if true the value may not be ``None``/JSON null.
+
+A message is reported per (offset, key, failed rule). The engine iterates all
+messages in the topic; each message applies to a rule by topic match. Missing
+topic-level rule configuration (``rules: []``) is allowed and yields zero
+violations.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Iterator, Optional
+
+import yaml
+
+from .rules_errors import (
+    RulesConfigError,
+    RuleFieldConfigError,
+    UnknownFieldTypeError,
+)
+
+
+# ---------------------------------------------------------------------------
+# Rule model
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FieldCheck:
+    name: str
+    type: Optional[str] = None
+    required: bool = False
+    enum: Optional[list] = None
+    pattern: Optional[str] = None
+    compiled_pattern: Optional[re.Pattern] = field(default=None, repr=False)
+    range: Optional[dict] = None
+    non_null: bool = False
+
+
+@dataclass
+class RuleSet:
+    version: int = 1
+    topic: str = "*"
+    fields: dict[str, Any] = field(default_factory=dict)
+    name: str = "default"
+
+第 24 页
+Kafka-Govern V1.0
+
+def load_rules_yaml(text: str) -> RuleSet:
+    """Parse a rules YAML string into a RuleSet."""
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise RulesConfigError(f"invalid YAML: {exc}") from exc
+    return build_ruleset(data)
+
+
+def load_rules_file(path: str | Path) -> RuleSet:
+    text = Path(path).read_text(encoding="utf-8")
+    return load_rules_yaml(text)
+
+
+def build_ruleset(data: Any) -> RuleSet:
+    if not isinstance(data, dict):
+        raise RulesConfigError("rules file must be a mapping")
+    rs = RuleSet()
+    version = data.get("version", 1)
+    if not isinstance(version, int):
+        raise RulesConfigError("'version' must be an integer")
+    rs.version = version
+    if "topic" in data:
+        rs.topic = str(data["topic"])
+    if "name" in data:
+        rs.name = str(data["name"])
+    if "rules" in data:
+        for r in data["rules"]:
+            _merge_rule(rs, r)
+    elif "fields" in data:
+        _merge_fields(rs, data["fields"], rule_name=rs.name)
+    return rs
+
+
+def _merge_rule(rs: RuleSet, rule: Any) -> None:
+    if not isinstance(rule, dict):
+        raise RuleFieldConfigError("each rule must be a mapping")
+    name = rule.get("name", "unnamed")
+    topic = rule.get("topic", rs.topic)
+    if topic != "*" and rs.topic != "*" and topic != rs.topic:
+        # different topic targeted by a specific rule; keep simple single-topic
+        raise RulesConfigError(
+            f"rule '{name}' topic mismatch (file is for '{rs.topic}', got '{topic}')")
+    fields = rule.get("fields")
+    if fields is None:
+        raise RulesConfigError(f"rule '{name}' has no 'fields'")
+    _merge_fields(rs, fields, rule_name=name)
+
+
+第 25 页
+Kafka-Govern V1.0
+def _merge_fields(rs: RuleSet, fields: Any, rule_name: str) -> None:
+    if not isinstance(fields, dict):
+        raise RuleFieldConfigError(f"rule '{rule_name}' fields must be a mapping")
+    for fname, spec in fields.items():
+        _validate_field_spec(fname, spec, rule_name)
+        check = FieldCheck(name=fname)
+        if "type" in spec:
+            check.type = str(spec["type"]).lower()
+            _validate_type(fname, check.type, rule_name)
+        if spec.get("required"):
+            check.required = True
+        if "enum" in spec:
+            check.enum = list(spec["enum"])
+        if "pattern" in spec:
+            check.pattern = str(spec["pattern"])
+            try:
+                check.compiled_pattern = re.compile(check.pattern)
+            except re.error as exc:
+                raise RuleFieldConfigError(
+                    f"field '{fname}': invalid regex pattern: {exc}") from exc
+        if "range" in spec:
+            rng = spec["range"]
+            if not isinstance(rng, dict):
+                raise RuleFieldConfigError(f"field '{fname}': range must be a mapping")
+            bounds = {}
+            for key in ("minimum", "maximum"):
+                if key in rng:
+                    v = rng[key]
+                    bounds[key] = float(v) if not isinstance(v, bool) else v
+            if not bounds:
+                raise RuleFieldConfigError(f"field '{fname}': range needs minimum/maximum")
+            check.range = bounds
+        if spec.get("non_null"):
+            check.non_null = True
+        rs.fields[fname] = check
+
+
+def _validate_type(field_name: str, t: str, rule_name: str) -> None:
+    allowed = {
+        "string", "integer", "int", "number", "boolean", "bool",
+        "array", "object", "record", "map",
+    }
+    if t not in allowed:
+        raise UnknownFieldTypeError(
+            f"field '{field_name}' in rule '{rule_name}' has unknown type '{t}'")
+
+
+def _validate_field_spec(field_name: str, spec: Any, rule_name: str) -> None:
+    if not isinstance(spec, dict):
+        raise RuleFieldConfigError(
+第 26 页
+Kafka-Govern V1.0
+            f"field '{field_name}' in rule '{rule_name}' must be a mapping")
+
+    unknown = set(spec) - {"type", "required", "enum", "pattern", "range", "non_null"}
+    if unknown:
+        raise RuleFieldConfigError(
+            f"field '{field_name}' has unknown keys: {sorted(unknown)}")
+
+    # type presence guards
+    if "required" in spec and not isinstance(spec["required"], bool):
+        raise RuleFieldConfigError(f"field '{field_name}' required must be bool")
+    if "non_null" in spec and not isinstance(spec["non_null"], bool):
+        raise RuleFieldConfigError(f"field '{field_name}' non_null must be bool")
+    if "enum" in spec and not isinstance(spec["enum"], list):
+        raise RuleFieldConfigError(f"field '{field_name}' enum must be a list")
+    if "pattern" in spec and not isinstance(spec["pattern"], str):
+        raise RuleFieldConfigError(f"field '{field_name}' pattern must be a string")
+
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Violation:
+    rule: str
+    topic: str
+    partition: int
+    offset: int
+    key: Any
+    field: str
+    check: str
+    message: str
+
+    def to_dict(self) -> dict:
+        return {
+            "rule": self.rule,
+            "topic": self.topic,
+            "partition": self.partition,
+            "offset": self.offset,
+            "key": _json_safe_key(self.key),
+            "field": self.field,
+            "check": self.check,
+            "message": self.message,
+        }
+
+
+def _json_safe_key(key: Any) -> Any:
+    if isinstance(key, (bytes, bytearray)):
+        try:
+第 27 页
+Kafka-Govern V1.0
+            return key.decode("utf-8")
+        except UnicodeDecodeError:
+            return {"$bytes": key.hex()}
+    return key
+
+
+@dataclass
+class Message:
+    """A single Kafka message from a readable source."""
+
+    topic: str
+    partition: int
+    offset: int
+    key: Any
+    value: Any  # decoded dict/record
+
+    def to_dict(self) -> dict:
+        return {
+            "topic": self.topic,
+            "partition": self.partition,
+            "offset": self.offset,
+            "key": _json_safe_key(self.key),
+            "value": self.value,
+        }
+
+
+def validate_message(rs: RuleSet, msg: Message) -> list[Violation]:
+    """Run a message through the rules; returns all violations (none = ok)."""
+    topic_ok = rs.topic == "*" or rs.topic == msg.topic
+    if not topic_ok:
+        return []
+
+    result: list[Violation] = []
+    value = msg.value if isinstance(msg.value, dict) else {}
+    for check in rs.fields.values():
+        present = check.name in (value or {})
+        raw = value.get(check.name) if present else None
+
+        # required check
+        if check.required and not present:
+            result.append(Violation(
+                rule=rs.name, topic=msg.topic, partition=msg.partition,
+                offset=msg.offset, key=msg.key, field=check.name,
+                check="required", message=f"required field missing: '{check.name}'"))
+            continue
+        if not present:
+            continue
+
+        # non_null check
+        if check.non_null and raw is None:
+第 28 页
+Kafka-Govern V1.0
+            result.append(Violation(
+                rule=rs.name, topic=msg.topic, partition=msg.partition,
+                offset=msg.offset, key=msg.key, field=check.name,
+                check="non_null", message=f"field '{check.name}' is null but must be non-null"))
+            continue
+
+        # type check
+        if check.type is not None and raw is not None:
+            if not _type_ok(check.type, raw):
+                result.append(Violation(
+                    rule=rs.name, topic=msg.topic, partition=msg.partition,
+                    offset=msg.offset, key=msg.key, field=check.name,
+                    check="type", message=(
+                        f"field '{check.name}' has type {_type_repr(raw)} "
+                        f"but rule expects {check.type}")))
+        # enum
+        if check.enum is not None and raw is not None and raw not in check.enum:
+            result.append(Violation(
+                rule=rs.name, topic=msg.topic, partition=msg.partition,
+                offset=msg.offset, key=msg.key, field=check.name,
+                check="enum", message=(
+                    f"field '{check.name}' value {raw!r} not in allowed enum "
+                    f"{check.enum!r}")))
+        # pattern
+        if check.compiled_pattern is not None and isinstance(raw, str):
+            if not check.compiled_pattern.match(raw):
+                result.append(Violation(
+                    rule=rs.name, topic=msg.topic, partition=msg.partition,
+                    offset=msg.offset, key=msg.key, field=check.name,
+                    check="pattern", message=(
+                        f"field '{check.name}' value {raw!r} does not match "
+                        f"pattern /{check.pattern}/")))
+        # range
+        if check.range is not None and isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            num = float(raw)
+            for bound, threshold in check.range.items():
+                if bound == "minimum" and num < threshold:
+                    result.append(Violation(
+                        rule=rs.name, topic=msg.topic, partition=msg.partition,
+                        offset=msg.offset, key=msg.key, field=check.name,
+                        check="range", message=(
+                            f"field '{check.name}' value {raw!r} < minimum {threshold}")))
+                if bound == "maximum" and num > threshold:
+                    result.append(Violation(
+                        rule=rs.name, topic=msg.topic, partition=msg.partition,
+                        offset=msg.offset, key=msg.key, field=check.name,
+                        check="range", message=(
+                            f"field '{check.name}' value {raw!r} > maximum {threshold}")))
+
+    return result
+第 29 页
+Kafka-Govern V1.0
+
+
+def _type_ok(t: str, val: Any) -> bool:
+    if val is None:
+        return True  # handled by non_null if that flag is set
+    if t == "string":
+        return isinstance(val, str)
+    if t == "integer" or t == "int":
+        return isinstance(val, int) and not isinstance(val, bool)
+    if t == "number":
+        return isinstance(val, (int, float)) and not isinstance(val, bool)
+    if t == "boolean" or t == "bool":
+        return isinstance(val, bool)
+    if t == "array":
+        return isinstance(val, list)
+    if t in ("object", "record", "map"):
+        return isinstance(val, dict)
+    return False
+
+
+def _type_repr(val: Any) -> str:
+    if isinstance(val, bool):
+        return "boolean"
+    if isinstance(val, int):
+        return "integer"
+    if isinstance(val, float):
+        return "number"
+    if isinstance(val, str):
+        return "string"
+    if isinstance(val, list):
+        return "array"
+    if isinstance(val, dict):
+        return "object"
+    return type(val).__name__
+
+
+# ---------------------------------------------------------------------------
+# Message sources (offline fixtures)
+# ---------------------------------------------------------------------------
+
+
+def iter_messages_from_json(path: str | Path, topic: Optional[str] = None) -> Iterator[Message]:
+    """Yield Message objects from a JSON fixture.
+
+    Fixture shape (per topic):
+
+        { "topic": "payments",
+          "partition": 0,
+          "messages": [ {"offset": 3, "key": "k1", "value": {...}}, ... ] }
+
+第 30 页
+Kafka-Govern V1.0
+        raise CliError(str(exc)) from exc
+
+    violates = len(violation_list) > 0
+    max_v = args.max_violations if args.max_violations is not None else 0
+    gate_failed = violates and (max_v <= 0 or len(violation_list) > max_v)
+
+    results = {
+        "ok": not violates,
+        "gate": max_v,
+        "violation_count": len(violation_list),
+        "rule": rs.name,
+        "topic": rs.topic,
+        "violations": [v.to_dict() for v in violation_list],
+        "generated_at": now_utc_iso(),
+    }
+
+    out_text = json.dumps(results, indent=2, ensure_ascii=False)
+    _write_out(args.output, out_text, force=bool(args.output))
+
+    if not args.output:
+        if not args.quiet:
+            print(out_text)
+    else:
+        print(
+            f"ok={results['ok']} violations={len(violation_list)} "
+            f"gate={max_v} -> {'PASS' if not gate_failed else 'FAIL'}",
+            file=sys.stderr,
+        )
+
+    return EXIT_OK if not gate_failed else EXIT_FAIL
+
+
+# ---------------------------------------------------------------------------
+# topics (broker metadata)
+# ---------------------------------------------------------------------------
+
+
+def cmd_topics(args) -> int:
+    if not args.bootstrap:
+        raise CliError("topics requires --bootstrap <host:port>")
+    try:
+        from .broker import list_topics
+    except ImportError:
+        raise CliError("broker features require the 'broker' extra (confluent-kafka)")
+
+    try:
+        topics = list_topics(args.bootstrap, timeout=args.timeout or 10.0)
+    except Exception as exc:
+        raise CliError(f"failed to list topics from {args.bootstrap}: {exc}") from exc
+
+第 31 页
+Kafka-Govern V1.0
+    payload = {"topics": topics, "generated_at": now_utc_iso()}
+    out_text = json.dumps(payload, indent=2, ensure_ascii=False)
+    _write_out(args.output, out_text, force=bool(args.output))
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------------
+# registry (Schema Registry client)
+# ---------------------------------------------------------------------------
+
+
+def cmd_registry(args) -> int:
+    if not args.registry_url or not args.registry_url.startswith("http"):
+        raise CliError("registry requires --registry-url <http://host:port>")
+
+    try:
+        from .registry import SchemaRegistryClient
+    except ImportError:
+        raise CliError("registry module unavailable")
+
+    client = SchemaRegistryClient(args.registry_url, timeout=args.timeout or 10.0)
+    if args.subject:
+        # Single subject: emit subject details (id/version/schema/../compat).
+        try:
+            versions = client.get_versions(args.subject)
+            payload = {"subject": args.subject, "versions": []}
+            for v in versions:
+                info = client.get_version(args.subject, v)
+                payload["versions"].append(
+                    {
+                        "id": info["id"],
+                        "version": info["version"],
+                        "compatibility": info["compatibility"],
+                        "schema": info["schema"],
+                    }
+                )
+        except ImportError:
+            raise
+        except Exception as exc:
+            raise CliError(f"registry request failed: {exc}") from exc
+    else:
+        try:
+            data = client.to_fixture_dict()
+            payload = {"subjects": data["subjects"], "generated_at": now_utc_iso()}
+        except Exception as exc:
+            raise CliError(f"registry request failed: {exc}") from exc
+
+    out_text = json.dumps(payload, indent=2, ensure_ascii=False)
+    _write_out(args.output, out_text, force=bool(args.output))
+    return EXIT_OK
+第 32 页
+Kafka-Govern V1.0
+
+
+# ---------------------------------------------------------------------------
+# report
+# ---------------------------------------------------------------------------
+
+
+def cmd_report(args) -> int:
+    if not args.topics or not Path(args.topics).exists():
+        raise CliError("report requires --topics <topics.json>")
+    registry = args.registry
+    groups = args.groups
+    violations: list = []
+
+    if args.rules and args.messages:
+        if not Path(args.messages).exists():
+            raise CliError(f"--messages file missing: {args.messages}")
+        try:
+            rs = load_rules_file(args.rules)
+            violations = validate_fixture_file(rs, args.messages)
+        except RulesConfigError as exc:
+            raise CliError(f"bad rules/messages: {exc}") from exc
+    elif args.violations:
+        vio = _load_json_or_exit(args.violations)
+        if isinstance(vio, list):
+            violations = vio
+        elif isinstance(vio, dict) and isinstance(vio.get("violations"), list):
+            violations = vio["violations"]
+
+    try:
+        rep = build_governance_report(
+            topics_fixture=args.topics,
+            registry_fixture=registry,
+            groups_fixture=groups,
+            rule_violations=violations,
+        )
+    except ValueError as exc:
+        raise CliError(str(exc)) from exc
+
+    fmt = args.format or "json"
+    if args.output and str(args.output).endswith(".csv"):
+        fmt = "csv"
+    if fmt == "csv":
+        text = report_to_csv(rep)
+        _write_out(args.output, text, force=bool(args.output))
+    else:
+        text = rep.to_json()
+        _write_out(args.output, text, force=bool(args.output))
+    return EXIT_OK
+
+第 33 页
+Kafka-Govern V1.0
+
+# ---------------------------------------------------------------------------
+# export
+# ---------------------------------------------------------------------------
+
+
+def cmd_export(args) -> int:
+    if args.type == "schema-diff":
+        # The export parser's --format describes *output* format; schema-diff's
+        # --format describes the *schema* language. Translate to JSON/MD flags.
+        if getattr(args, "format", "json") in ("markdown", "md"):
+            args.markdown = True
+            args.json = False
+        elif getattr(args, "format", "json") == "json":
+            args.json = True
+            args.markdown = False
+        for attr, default in (
+            ("before_version", 1), ("after_version", 2),
+            ("before_id", None), ("after_id", None),
+        ):
+            if not hasattr(args, attr):
+                setattr(args, attr, default)
+        args.format = getattr(args, "schema_format", None)
+        return cmd_schema_diff(args)
+    if args.type in ("check", "violations"):
+        return cmd_check(args)
+    if args.type == "report":
+        return cmd_report(args)
+    raise CliError(f"unknown export type: {args.type}")
+
+
+# ---------------------------------------------------------------------------
+# main
+# ---------------------------------------------------------------------------
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="kgov",
+        description="Kafka topic governance assistant (schema diff + dirty-data rules).",
+    )
+    parser.add_argument("--version", action="version", version=f"kgov {__version__}")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_sd = sub.add_parser("schema-diff", help="diff two schemas (Avro / JSON Schema)")
+    p_sd.add_argument("--before", required=True)
+    p_sd.add_argument("--after", required=True)
+    p_sd.add_argument("--format", choices=["avro", "json"], default=None)
+    p_sd.add_argument("--subject", default="record")
+    p_sd.add_argument("--before-version", type=int, default=1)
+第 34 页
+Kafka-Govern V1.0
+    p_sd.add_argument("--after-version", type=int, default=2)
+    p_sd.add_argument("--before-id", type=int, default=None)
+    p_sd.add_argument("--after-id", type=int, default=None)
+    p_sd.add_argument("--json", action="store_true", help="emit JSON instead of Markdown")
+    p_sd.add_argument("--markdown", action="store_true")
+    p_sd.add_argument("-o", "--output", default=None)
+    p_sd.set_defaults(func=cmd_schema_diff)
+
+    p_chk = sub.add_parser("check", help="validate messages against rules (CI gate)")
+    p_chk.add_argument("--config", required=True, help="rules YAML/JSON config")
+    p_chk.add_argument("--messages", default=None, help="JSON message fixture")
+    p_chk.add_argument("--broker", default=None, help="bootstrap servers for live reading")
+    p_chk.add_argument("--topic", default=None, help="topic to read (requires --broker)")
+    p_chk.add_argument("--schema-registry", default=None,
+                       help="Schema Registry URL for decoding Avro wire values (requires --broker)")
+    p_chk.add_argument("--max-violations", type=int, default=None,
+                       help="fail if violations exceed N (0 = fail on any)")
+    p_chk.add_argument("--format", choices=["json"], default="json")
+    p_chk.add_argument("-q", "--quiet", action="store_true")
+    p_chk.add_argument("-o", "--output", default=None)
+    p_chk.set_defaults(func=cmd_check)
+
+    p_top = sub.add_parser("topics", help="pull topic metadata from a broker")
+    p_top.add_argument("--bootstrap", required=True, help="broker bootstrap servers")
+    p_top.add_argument("--timeout", type=float, default=10.0)
+    p_top.add_argument("-o", "--output", default=None)
+    p_top.set_defaults(func=cmd_topics)
+
+    p_reg = sub.add_parser("registry", help="pull subject/schema metadata from a Schema Registry")
+    p_reg.add_argument("--registry-url", required=True, help="Schema Registry base URL")
+    p_reg.add_argument("--subject", default=None, help="restrict to one subject")
+    p_reg.add_argument("--timeout", type=float, default=10.0)
+    p_reg.add_argument("-o", "--output", default=None)
+    p_reg.set_defaults(func=cmd_registry)
+
+    p_rep = sub.add_parser("report", help="build governance report from fixtures")
+    p_rep.add_argument("--topics", required=True, help="topics.json fixture")
+    p_rep.add_argument("--registry", default=None)
+    p_rep.add_argument("--groups", default=None)
+    p_rep.add_argument("--rules", default=None)
+    p_rep.add_argument("--messages", default=None)
+    p_rep.add_argument("--violations", default=None)
+    p_rep.add_argument("--format", choices=["json", "csv"], default="json")
+    p_rep.add_argument("-o", "--output", default=None)
+    p_rep.set_defaults(func=cmd_report)
+
+    p_exp = sub.add_parser("export", help="export data (alias with JSON/CSV/MD output)")
+    p_exp.add_argument("--type", choices=["schema-diff", "check", "violations", "report"],
+                       required=True)
+    p_exp.add_argument("--format", choices=["json", "csv", "markdown", "md"], default="json")
+第 35 页
+Kafka-Govern V1.0
+    p_exp.add_argument("--before", default=None)
+    p_exp.add_argument("--after", default=None)
+    p_exp.add_argument("--subject", default="record")
+    p_exp.add_argument("--config", default=None)
+    p_exp.add_argument("--messages", default=None)
+    p_exp.add_argument("--broker", default=None)
+    p_exp.add_argument("--topic", default=None)
+    p_exp.add_argument("--schema-registry", default=None)
+    p_exp.add_argument("--topics", default=None)
+    p_exp.add_argument("--registry", default=None)
+    p_exp.add_argument("--groups", default=None)
+    p_exp.add_argument("--rules", default=None)
+    p_exp.add_argument("--violations", default=None)
+    p_exp.add_argument("--max-violations", type=int, default=None)
+    p_exp.add_argument("-o", "--output", default=None)
+    p_exp.set_defaults(func=cmd_export)
+
+    return parser
+
+
+def main(argv: Optional[list] = None) -> int:
+    parser = build_parser()
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        # argparse exits 2 on usage errors
+        return int(exc.code) if exc.code is not None else EXIT_OK
+
+    try:
+        return args.func(args)
+    except CliError as exc:
+        print(f"kgov: error: {exc}", file=sys.stderr)
+        return EXIT_RUNTIME
+    except KeyboardInterrupt:
+        return 130
+    except BrokenPipeError:
+        return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+# ===== File: tests/conftest.py =====
+"""Shared pytest fixtures."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+第 36 页
+Kafka-Govern V1.0
+
+from kgov.mock_registry import MockRegistry
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def load_json(path: Path):
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+@pytest.fixture
+def fixtures_dir() -> Path:
+    return FIXTURES
+
+
+@pytest.fixture
+def avro_series():
+    return load_json(FIXTURES / "schema_evolution" / "avro_series.json")
+
+
+@pytest.fixture
+def json_series():
+    return load_json(FIXTURES / "schema_evolution" / "json_series.json")
+
+
+@pytest.fixture
+def registry_server():
+    """A live in-process mock Schema Registry backing the disk registry fixture."""
+    reg = MockRegistry(load_json(FIXTURES / "registry" / "registry.json"))
+    reg.start()
+    try:
+        yield reg
+    finally:
+        reg.stop()
+
+
+@pytest.fixture
+def server(registry_server):
+    """Alias of ``registry_server`` for tests that don't care about the name."""
+    return registry_server
+# ===== File: tests/test_broker.py =====
+"""P3 — real broker layer tests.
+
+Full connection tests are skipped unless ``KGOV_LIVE_BROKER`` is set; the unit
+surface (helping functions + graceful ``NeedsBrokerError`` gating) always runs.
+"""
+
+from __future__ import annotations
+
+第 37 页
+Kafka-Govern V1.0
+import json
+import os
+
+import pytest
+
+from kgov.broker import (
+    BrokerMessage,
+    NeedsBrokerError,
+    _decode_value,
+    _json_safe,
+)
+
+
+# ---------------------------------------------------------------------------
+# Pure helpers
+# ---------------------------------------------------------------------------
+
+
+def test_json_safe_utf8():
+    assert _json_safe(b"hello") == "hello"
+
+
+def test_json_safe_binary_hex():
+    assert _json_safe(b"\xff\xfe") == {"$bytes": "fffe"}
+
+
+def test_json_safe_passthrough():
+    assert _json_safe({"x": 1}) == {"x": 1}
+    assert _json_safe(None) is None
+
+
+def test_decode_value_json_object():
+    assert _decode_value(b'{"amount_cents": 100}') == {"amount_cents": 100}
+
+
+def test_decode_value_raw_text_fallback():
+    assert _decode_value(b"plain text") == "plain text"
+
+
+def test_decode_value_binary_fallback():
+    assert _decode_value(b"\xff\xfe") == {"$bytes": "fffe"}
+
+
+def test_decode_value_none():
+    assert _decode_value(None) is None
+
+
+def test_broker_message_to_dict_serializable():
+    msg = BrokerMessage(
+        topic="payments",
+第 38 页
+Kafka-Govern V1.0
+        partition=0,
+        offset=42,
+        key=b"pay_042",
+        value={"amount_cents": 100},
+        timestamp_ms=1699999999999,
+        headers={"x-tenant": "acme"},
+    )
+    d = msg.to_dict()
+    json.dumps(d)  # must not raise
+    assert d["topic"] == "payments"
+    assert d["offset"] == 42
+    assert d["key"] == "pay_042"
+
+
+# ---------------------------------------------------------------------------
+# Confluent-wire Avro decoding
+# ---------------------------------------------------------------------------
+
+
+def _avro_wire_bytes(schema_id: int, record: dict, avro_schema: dict) -> bytes:
+    """Encode a record into the Confluent wire format (magic + id + datum)."""
+    import io
+    import json
+
+    from avro import io as avro_io
+    from avro import schema as avro_schema_mod
+
+    parsed = avro_schema_mod.parse(json.dumps(avro_schema))
+    buf = io.BytesIO()
+    writer = avro_io.DatumWriter(parsed)
+    writer.write(record, avro_io.BinaryEncoder(buf))
+    return b"\x00" + schema_id.to_bytes(4, byteorder="big") + buf.getvalue()
+
+
+_PAYMENT_SCHEMA = {
+    "type": "record",
+    "name": "Payment",
+    "namespace": "com.example",
+    "fields": [
+        {"name": "payment_id", "type": "string"},
+        {"name": "currency", "type": "string"},
+    ],
+}
+
+
+def test_avro_decoder_round_trip(registry_server):
+    """A Confluent-wire Avro payload with a registered schema decodes to a dict."""
+    from kgov.broker import AvroRecordDecoder, _UNDECODED
+
+    schema_id = 1001
+第 39 页
+Kafka-Govern V1.0
+    registry_server.add_subject(
+        "payments-value",
+        {
+            "id": schema_id,
+            "version": 1,
+            "compatibility": "BACKWARD",
+            "schema": _PAYMENT_SCHEMA,
+        },
+    )
+    raw = _avro_wire_bytes(schema_id, {"payment_id": "pay_001", "currency": "USD"}, _PAYMENT_SCHEMA)
+    decoder = AvroRecordDecoder(registry_server.client)
+    assert decoder(raw) == {"payment_id": "pay_001", "currency": "USD"}
+
+
+def test_avro_decoder_unknown_schema_id(registry_server):
+    """An id the registry does not know falls back to the UNDECODED sentinel."""
+    from kgov.broker import AvroRecordDecoder, _UNDECODED
+
+    decoder = AvroRecordDecoder(registry_server.client)
+    raw = _avro_wire_bytes(424242, {"payment_id": "pay_1", "currency": "USD"}, _PAYMENT_SCHEMA)
+    assert decoder(raw) is _UNDECODED
+
+
+def test_avro_decoder_rejects_non_wire_bytes(registry_server):
+    """Bytes that are not Confluent-wire framed are left for the text fallback."""
+    from kgov.broker import AvroRecordDecoder, _UNDECODED
+
+    decoder = AvroRecordDecoder(registry_server.client)
+    assert decoder(b"plain text payload") is _UNDECODED
+    assert decoder(b"") is _UNDECODED
+
+
+def test_avro_decoder_malformed_datum(registry_server):
+    """A wire frame whose datum is not decodable returns UNDECODED (no crash)."""
+    from kgov.broker import AvroRecordDecoder, _UNDECODED
+
+    schema_id = 2002
+    registry_server.add_subject(
+        "broken-value",
+        {
+            "id": schema_id,
+            "version": 1,
+            "compatibility": "BACKWARD",
+            "schema": _PAYMENT_SCHEMA,
+        },
+    )
+    trash = b"\x00" + schema_id.to_bytes(4, byteorder="big") + b"\xff\xff\xff\xff\xff"
+    decoder = AvroRecordDecoder(registry_server.client)
+    assert decoder(trash) is _UNDECODED
+
+第 40 页
+Kafka-Govern V1.0
+
+def test_decode_value_json_preferred_over_avro():
+    """Valid JSON bytes are decoded as JSON; the Avro decoder is never asked."""
+    from kgov.broker import _UNDECODED, _decode_value
+
+    def boom(raw: bytes) -> object:  # pragma: no cover - must not be reached
+        raise AssertionError("decoder should not be called for JSON")
+
+    assert _decode_value(b'{"amount_cents": 100}', boom) == {"amount_cents": 100}
+
+
+def test_decode_value_avro_fallback(registry_server):
+    """Opaque non-JSON bytes flow through the supplied Avro decoder."""
+    from kgov.broker import AvroRecordDecoder, _decode_value
+
+    schema_id = 1001
+    registry_server.add_subject(
+        "payments-value",
+        {
+            "id": schema_id,
+            "version": 1,
+            "compatibility": "BACKWARD",
+            "schema": _PAYMENT_SCHEMA,
+        },
+    )
+    decoder = AvroRecordDecoder(registry_server.client)
+    raw = _avro_wire_bytes(schema_id, {"payment_id": "pay_9", "currency": "EUR"}, _PAYMENT_SCHEMA)
+    assert _decode_value(raw, decoder) == {"payment_id": "pay_9", "currency": "EUR"}
+
+
+def test_decode_value_text_when_decoder_refuses():
+    """If the decoder declines, plain UTF-8 text is returned as a string."""
+    from kgov.broker import _UNDECODED, _decode_value
+
+    def refuse(raw: bytes) -> object:
+        return _UNDECODED
+
+    assert _decode_value(b"plain text", refuse) == "plain text"
+
+
+# ---------------------------------------------------------------------------
+# Gating
+# ---------------------------------------------------------------------------
+
+
+def test_require_kafka_when_missing(monkeypatch):
+    monkeypatch.setitem(__import__("sys").modules, "confluent_kafka", None)
+    with pytest.raises(NeedsBrokerError):
+        from kgov import broker
+
+第 41 页
+Kafka-Govern V1.0
+        broker._require_kafka()
+
+
+def test_broker_error_message():
+    err = NeedsBrokerError("install with `pip install 'kgov[broker]'`")
+    assert "kgov[broker]" in str(err)
+
+
+@pytest.mark.skipif(
+    not os.environ.get("KGOV_LIVE_BROKER"),
+    reason="set KGOV_LIVE_BROKER=host:port to run live broker integration",
+)
+def test_list_topics_live():
+    from kgov.broker import list_topics
+
+    topics = list_topics(os.environ["KGOV_LIVE_BROKER"])
+    assert isinstance(topics, list)
+
+
+@pytest.mark.skipif(
+    not os.environ.get("KGOV_LIVE_BROKER"),
+    reason="set KGOV_LIVE_BROKER=host:port to run live broker integration",
+)
+def test_read_topic_live():
+    from kgov.broker import read_topic
+    from kgov.rules import Message, RuleSet, build_ruleset, validate_message
+
+    rs = build_ruleset({"version": 1, "topic": "payments", "fields": {}})
+    msgs = read_topic(os.environ["KGOV_LIVE_BROKER"], "payments", n=5, timeout=10)
+    assert len(msgs) <= 5
+    if msgs:
+        v = validate_message(
+            rs,
+            Message(
+                topic=msgs[0].topic,
+                partition=msgs[0].partition,
+                offset=msgs[0].offset,
+                key=msgs[0].key,
+                value=msgs[0].value,
+            ),
+        )
+        assert isinstance(v, list)
+# ===== File: tests/test_cli.py =====
+"""End-to-end CLI tests: exit codes, output formats, live registry wiring."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+第 42 页
+Kafka-Govern V1.0
+import pytest
+
+from kgov.cli import main
+from kgov.model import CompatibilityKind
+
+from kgov.mock_registry import MockRegistry
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def _run(*argv: str) -> tuple[int, str, str]:
+    import contextlib
+    import io
+
+    stdout, stderr = io.StringIO(), io.StringIO()
+    try:
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = main(list(argv))
+    except SystemExit as exc:  # pragma: no cover - safety net
+        code = int(exc.code or 0)
+    return code, stdout.getvalue(), stderr.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# schema-diff
+# ---------------------------------------------------------------------------
+
+
+def test_schema_diff_additive_markdown(capsys):
+    code = main([
+        "schema-diff",
+        "--before", str(FIXTURES / "schemas" / "v1.json"),
+        "--after", str(FIXTURES / "schemas" / "v2.json"),
+    ])
+    out = capsys.readouterr()
+    assert code == 0
+    assert "SCHEMA DIFF" in out.err
+
+
+def test_schema_diff_breaking_exit_1(tmp_path):
+    out = tmp_path / "diff.json"
+    code = main([
+        "schema-diff",
+        "--before", str(FIXTURES / "schemas" / "breaking_before.json"),
+        "--after", str(FIXTURES / "schemas" / "breaking_after.json"),
+        "--json", "-o", str(out),
+    ])
+    assert code == 1
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["kind"] == CompatibilityKind.BREAKING
+第 43 页
+Kafka-Govern V1.0
+    assert data["compatible"] is False
+
+
+def test_schema_diff_missing_file(capsys):
+    code = main(["schema-diff", "--before", "/no/such/file.json", "--after", "/nope.json"])
+    assert code == 3
+
+
+def test_schema_diff_compact_registry_ref(server) -> None:
+    """Shorthand refs ``host:port/subject/version`` resolve against a registry."""
+    ref1 = f"{server.base_url}/payments-value/1"
+    ref2 = f"{server.base_url}/payments-value/2"
+    code, out, _ = _run(
+        "schema-diff",
+        "--before", ref1.replace("http://", ""),
+        "--after", ref2.replace("http://", ""),
+        "--subject", "payments-value", "--json",
+    )
+    assert code == 0
+    data = json.loads(out)
+    assert data["subject"] == "payments-value"
+    assert data["kind"] == CompatibilityKind.ADDITIVE
+    assert any("fee_cents" in r["path"] for r in data["results"])
+
+
+# ---------------------------------------------------------------------------
+# check
+# ---------------------------------------------------------------------------
+
+
+def test_check_clean_exit_0(tmp_path):
+    rules = FIXTURES / "rules" / "rules_scale.yaml"
+    out = tmp_path / "result.json"
+    code = main(["check", "--config", str(rules), "--messages", str(FIXTURES / "messages" / "payments_messages.json"),
+                 "-o", str(out)])
+    assert code == 1  # fixture messages are intentionally dirty
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["ok"] is False
+    assert len(data["violations"]) == 9
+
+
+def test_check_within_gate_exit_0(tmp_path):
+    rules = FIXTURES / "rules" / "rules_scale.yaml"
+    code = main(["check", "--config", str(rules), "--messages", str(FIXTURES / "messages" / "payments_messages.json"),
+                 "--max-violations", "10", "--quiet"])
+    assert code == 0
+
+
+def test_check_gate_exceeded_exit_1(tmp_path):
+    rules = FIXTURES / "rules" / "rules_scale.yaml"
+第 44 页
+Kafka-Govern V1.0
+    code = main(["check", "--config", str(rules), "--messages", str(FIXTURES / "messages" / "payments_messages.json"),
+                 "--max-violations", "3", "--quiet"])
+    assert code == 1
+
+
+def test_check_requires_data_source(capsys):
+    rules = FIXTURES / "rules" / "rules_scale.yaml"
+    code = main(["check", "--config", str(rules)])
+    assert code == 3
+
+
+def test_check_missing_config(capsys):
+    code = main(["check", "--config", "/no/rules.yaml", "--messages", "x.json"])
+    assert code == 3
+
+
+# ---------------------------------------------------------------------------
+# report
+# ---------------------------------------------------------------------------
+
+
+def test_report_default_json(capsys):
+    code = main(["report", "--topics", str(FIXTURES / "topics" / "topics.json"),
+                 "--registry", str(FIXTURES / "registry" / "registry.json"),
+                 "--groups", str(FIXTURES / "subject_groups" / "consumer_groups.json")])
+    assert code == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["total_topics"] == 3
+
+
+def test_report_csv(tmp_path):
+    out = tmp_path / "report.csv"
+    code = main(["report", "--topics", str(FIXTURES / "topics" / "topics.json"), "-o", str(out)])
+    assert code == 0
+    assert out.read_text(encoding="utf-8").startswith("name,")
+
+
+def test_report_requires_topics(capsys):
+    # argparse fails on the missing required flag before our handler runs
+    code = main(["report"])
+    assert code == 2
+
+
+# ---------------------------------------------------------------------------
+# export
+# ---------------------------------------------------------------------------
+
+
+def test_export_schema_diff_md(tmp_path):
+    out = tmp_path / "diff.md"
+第 45 页
+Kafka-Govern V1.0
+    code = main(["export", "--type", "schema-diff", "--format", "markdown",
+                 "--before", str(FIXTURES / "schemas" / "v1.json"),
+                 "--after", str(FIXTURES / "schemas" / "v2.json"), "-o", str(out)])
+    assert code == 0
+    assert out.read_text(encoding="utf-8").startswith("#")
+
+
+def test_export_report_csv(tmp_path):
+    out = tmp_path / "report.csv"
+    code = main(["export", "--type", "report", "--format", "csv",
+                 "--topics", str(FIXTURES / "topics" / "topics.json"), "-o", str(out)])
+    assert code == 0
+    assert out.read_text(encoding="utf-8").startswith("name,")
+
+
+# ---------------------------------------------------------------------------
+# registry (live mock server through the CLI)
+# ---------------------------------------------------------------------------
+
+
+def test_registry_cli_full(server) -> None:
+    code, out, _ = _run("registry", "--registry-url", server.base_url)
+    assert code == 0
+    data = json.loads(out)
+    assert set(data["subjects"]) == {"orders-value", "payments-value"}
+
+
+def test_registry_cli_single_subject(server) -> None:
+    code, out, _ = _run("registry", "--registry-url", server.base_url, "--subject", "payments-value")
+    assert code == 0
+    data = json.loads(out)
+    assert data["subject"] == "payments-value"
+    assert [v["version"] for v in data["versions"]] == [1, 2]
+
+
+def test_registry_cli_unreachable(capsys) -> None:
+    code = main(["registry", "--registry-url", "http://127.0.0.1:1"])
+    assert code == 3
+# ===== File: tests/test_registry.py =====
+"""Tests for the Confluent-wire Schema Registry client + mock server.
+
+The mock registry binds an ephemeral loopback port, so the suite exercises the
+real HTTP path (client -> in-process server) end to end. No external network
+is required.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+第 46 页
+Kafka-Govern V1.0
+
+import pytest
+
+from kgov.mock_registry import MockRegistry, MockRegistryError
+from kgov.registry import RegistryError, SchemaRegistryClient
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+FIXTURE = {
+    "subjects": {
+        "payments-value": [
+            {
+                "id": 1,
+                "version": 1,
+                "compatibility": "BACKWARD",
+                "schema": {"type": "record", "name": "Payment", "fields": []},
+            },
+            {
+                "id": 2,
+                "version": 2,
+                "compatibility": "BACKWARD",
+                "schema": {"type": "record", "name": "Payment", "fields": [{"name": "fee_cents", "type": ["null", "long"], "default": None}]},
+            },
+        ],
+        "orders-value": [
+            {
+                "id": 3,
+                "version": 1,
+                "compatibility": "BREAKING",
+                "schema": {"type": "record", "name": "Order", "fields": [{"name": "total_cents", "type": "long"}]},
+            }
+        ],
+    }
+}
+
+
+@pytest.fixture
+def server():
+    reg = MockRegistry(dict(FIXTURE))
+    reg.start()
+    try:
+        yield reg
+    finally:
+        reg.stop()
+
+
+@pytest.fixture
+def client(server) -> SchemaRegistryClient:
+    return server.client
+
+第 47 页
+Kafka-Govern V1.0
+
+def test_list_subjects(client):
+    assert client.list_subjects() == ["orders-value", "payments-value"]
+
+
+def test_get_versions(client):
+    assert client.get_versions("payments-value") == [1, 2]
+    assert client.get_versions("orders-value") == [1]
+
+
+def test_get_version(client):
+    v1 = client.get_version("payments-value", 1)
+    assert v1["id"] == 1
+    assert v1["version"] == 1
+    assert v1["compatibility"] == "BACKWARD"
+    assert v1["schema"]["name"] == "Payment"
+
+    v2 = client.get_version("payments-value", 2)
+    assert v2["id"] == 2
+    assert v2["compatibility"] == "BACKWARD"
+
+
+def test_get_latest(client):
+    latest = client.get_latest("payments-value")
+    assert latest["version"] == 2
+    assert latest["id"] == 2
+
+
+def test_compatibility_level(client):
+    assert client._compatibility_level("payments-value") == "BACKWARD"
+    assert client._compatibility_level("orders-value") == "BREAKING"
+
+
+def test_schema_by_id(client):
+    schema = client.get_schema_by_id(3)
+    assert schema["id"] == 3
+    assert schema["schema"]["fields"][0]["name"] == "total_cents"
+
+
+def test_no_subject(client):
+    with pytest.raises(RegistryError):
+        client.get_version("does-not-exist", 1)
+
+
+def test_fixture_dict_roundtrip(client):
+    fixture = client.to_fixture_dict()
+    assert set(fixture["subjects"]) == {"orders-value", "payments-value"}
+    assert len(fixture["subjects"]["payments-value"]) == 2
+    assert fixture["subjects"]["orders-value"][0]["version"] == 1
+
+第 48 页
+Kafka-Govern V1.0
+
+def test_iso_string_schemas_are_normalized():
+    # Confluent wire wraps schema as a *string*; client must parse it back.
+    fixture = {
+        "subjects": {
+            "charlie-value": [
+                {
+                    "id": 7,
+                    "version": 1,
+                    "compatibility": "FORWARD",
+                    "schema": {"type": "record", "name": "Charlie", "fields": [{"name": "a", "type": "string"}]},
+                }
+            ]
+        }
+    }
+    with MockRegistry(fixture) as reg:
+        c = reg.client
+        info = c.get_version("charlie-value", 1)
+        assert info["schema"]["fields"][0]["name"] == "a"
+        assert c._compatibility_level("charlie-value") == "FORWARD"
+
+
+def test_mock_registry_loads_disk_fixture():
+    path = FIXTURES / "registry" / "registry.json"
+    fixture = json.loads(path.read_text(encoding="utf-8"))
+    with MockRegistry(fixture) as reg:
+        c = reg.client
+        assert c.list_subjects() == ["orders-value", "payments-value"]
+        latest = c.get_latest("payments-value")
+        assert latest["version"] == 2
+
+
+def test_set_fixture_swap(server):
+    client = server.client
+    assert client.list_subjects() == ["orders-value", "payments-value"]
+    server.set_fixture({"subjects": {"new-value": [{"id": 9, "version": 1, "schema": {"type": "record", "name": "N", "fields": []}}]}})
+    assert client.list_subjects() == ["new-value"]
+
+
+def test_unreachable_registry():
+    client = SchemaRegistryClient("http://127.0.0.1:1")
+    assert client.is_reachable() is False
+    with pytest.raises(RegistryError):
+        client.list_subjects()
+
+
+def test_bind_failure_raises():
+    reg = MockRegistry()
+    with pytest.raises(MockRegistryError):
+        reg.start(port=1)  # port 1 is not bindable without privileges
+第 49 页
+Kafka-Govern V1.0
+    reg.stop()
+# ===== File: tests/test_report.py =====
+"""P2 — governance report + export tests."""
+
+from __future__ import annotations
+
+import csv
+import io
+import json
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from kgov.report import (
+    GovernanceReport,
+    report_to_csv,
+    build_governance_report,
+)
+from kgov.rules import (
+    Message,
+    RuleSet,
+    build_ruleset,
+    validate_fixture_file,
+    iter_messages_from_json,
+    load_rules_file,
+)
+
+FIXTURES = __import__("pathlib").Path(__file__).parent / "fixtures"
+
+NOW = datetime(2026, 11, 14, 22, 0, 0, tzinfo=timezone.utc)
+
+
+def test_build_report_from_fixtures():
+    rep = build_governance_report(
+        topics_fixture=FIXTURES / "topics" / "topics.json",
+        registry_fixture=FIXTURES / "registry" / "registry.json",
+        groups_fixture=FIXTURES / "subject_groups" / "consumer_groups.json",
+        now=NOW,
+    )
+    assert rep.total_topics == 3
+    d = {t.name: t for t in rep.topics}
+    assert d["payments"].owner == "payments-team"
+    assert d["payments"].schema_version == 2
+    assert d["payments"].schema_state == "COMPATIBLE"
+    assert d["payments"].tags == ["core", "critical"]
+
+
+def test_report_staleness():
+    rep = build_governance_report(
+        topics_fixture=FIXTURES / "topics" / "topics.json",
+第 50 页
+Kafka-Govern V1.0
+        groups_fixture=FIXTURES / "subject_groups" / "consumer_groups.json",
+        now=NOW,
+    )
+    d = {t.name: t for t in rep.topics}
+    # payments consumed 15h ago -> fresh
+    assert d["payments"].stale is False
+    # orders last consumed 2026-09-20 -> stale
+    assert d["orders"].stale is True
+    # inventory last produced 2026-10-01 but consumed 2026-11-13 -> fresh
+    assert d["inventory-events"].stale is False
+
+
+def test_report_violation_count_accumulated():
+    rs = load_rules_file(FIXTURES / "rules" / "rules_scale.yaml")
+    violations = validate_fixture_file(rs, FIXTURES / "messages" / "payments_messages.json")
+    rep = build_governance_report(
+        topics_fixture=FIXTURES / "topics" / "topics.json",
+        groups_fixture=FIXTURES / "subject_groups" / "consumer_groups.json",
+        rule_violations=violations,
+        now=NOW,
+    )
+    payments = next(t for t in rep.topics if t.name == "payments")
+    assert payments.violation_count == len(violations)
+    assert payments.violation_count >= 5
+
+
+def test_report_to_dict_json_serializable():
+    rep = build_governance_report(
+        topics_fixture=FIXTURES / "topics" / "topics.json",
+        now=NOW,
+    )
+    rep.to_json()  # must not raise
+
+
+def test_report_to_csv():
+    rep = build_governance_report(
+        topics_fixture=FIXTURES / "topics" / "topics.json",
+        now=NOW,
+    )
+    csv_text = report_to_csv(rep)
+    reader = csv.DictReader(io.StringIO(csv_text))
+    rows = list(reader)
+    assert len(rows) == 3
+    assert rows[0]["name"] == "payments"
+    assert "schema_subject" in rows[0]
+    assert "violation_count" in rows[0]
+
+
+def test_registry_breaking_state_surface():
+    rep = build_governance_report(
+第 51 页
+Kafka-Govern V1.0
+        topics_fixture=FIXTURES / "topics" / "topics.json",
+        registry_fixture=FIXTURES / "registry" / "registry.json",
+        now=NOW,
+    )
+    orders = next(t for t in rep.topics if t.name == "orders")
+    assert orders.schema_state == "BREAKING"
+# ===== File: tests/test_rules.py =====
+"""P1 — dirty-data rules engine tests."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from kgov.rules import (
+    FieldCheck,
+    Message,
+    RuleSet,
+    build_ruleset,
+    iter_messages_from_json,
+    load_rules_file,
+    load_rules_yaml,
+    validate_fixture_file,
+    validate_message,
+)
+from kgov.rules_errors import (
+    RuleFieldConfigError,
+    RulesConfigError,
+    UnknownFieldTypeError,
+)
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def _rs(**overrides) -> RuleSet:
+    data = {
+        "version": 1,
+        "topic": "payments",
+        "fields": {
+            "amount_cents": {
+                "type": "integer",
+                "required": True,
+                "non_null": True,
+                "range": {"minimum": 0, "maximum": 100000},
+            },
+            "currency": {"type": "string", "required": True, "pattern": "^[A-Z]{3}$"},
+            "status": {"type": "string", "enum": ["ACCEPTED", "PENDING", "REJECTED"]},
+            "fee_cents": {"type": "integer", "non_null": True, "range": {"minimum": 0}},
+第 52 页
+Kafka-Govern V1.0
+        },
+    }
+    data.update(overrides)
+    return build_ruleset(data)
+
+
+def test_build_ruleset_parses():
+    rs = _rs()
+    assert rs.topic == "payments"
+    assert isinstance(rs.fields["amount_cents"], FieldCheck)
+    assert rs.fields["amount_cents"].type == "integer"
+    assert rs.fields["amount_cents"].range == {"minimum": 0, "maximum": 100000}
+
+
+def test_load_rules_yaml():
+    text = """
+version: 1
+topic: payments
+fields:
+  amount_cents:
+    type: integer
+    required: true
+"""
+    rs = load_rules_yaml(text)
+    assert rs.fields["amount_cents"].required is True
+
+
+def test_load_rules_yaml_invalid():
+    with pytest.raises(RulesConfigError):
+        load_rules_yaml("{ unclosed")
+
+
+def test_unknown_type_rejected():
+    with pytest.raises(UnknownFieldTypeError):
+        build_ruleset({"fields": {"x": {"type": "datetime"}}})
+
+
+def test_unknown_field_key_rejected():
+    with pytest.raises(RuleFieldConfigError):
+        build_ruleset({"fields": {"x": {"type": "string", "bogus": 1}}})
+
+
+def test_invalid_regex_rejected():
+    with pytest.raises(RuleFieldConfigError):
+        build_ruleset({"fields": {"x": {"pattern": "["}}})
+
+
+def test_validate_clean_message():
+    rs = _rs()
+    msg = Message(
+第 53 页
+Kafka-Govern V1.0
+        topic="payments", partition=0, offset=3, key="k",
+        value={"amount_cents": 100, "currency": "USD", "status": "ACCEPTED", "fee_cents": 5},
+    )
+    assert validate_message(rs, msg) == []
+
+
+def test_violation_required_missing_field():
+    rs = _rs()
+    msg = Message(topic="payments", partition=0, offset=7, key="k",
+                  value={"currency": "USD"})
+    v = validate_message(rs, msg)
+    assert len(v) == 1
+    print(v)
+
+
+def test_violation_type_mismatch():
+    rs = _rs()
+    msg = Message(topic="payments", partition=0, offset=9, key="k",
+                  value={"amount_cents": "not-int", "currency": "USD", "status": "A", "fee_cents": 1})
+    v = validate_message(rs, msg)
+    assert any(x.check == "type" and x.field == "amount_cents" for x in v)
+
+
+def test_violation_enum():
+    rs = _rs()
+    msg = Message(topic="payments", partition=0, offset=11, key="k",
+                  value={"amount_cents": 5, "currency": "USD", "status": "WHATEVER", "fee_cents": 1})
+    v = validate_message(rs, msg)
+    assert any(x.check == "enum" and x.field == "status" for x in v)
+
+
+def test_violation_pattern():
+    rs = _rs()
+    msg = Message(topic="payments", partition=0, offset=13, key="k",
+                  value={"amount_cents": 5, "currency": "usd", "status": "A", "fee_cents": 1})
+    v = validate_message(rs, msg)
+    assert any(x.check == "pattern" and x.field == "currency" for x in v)
+
+
+def test_violation_range_min_and_max():
+    rs = _rs()
+    low = Message(topic="payments", partition=0, offset=15, key="k",
+                  value={"amount_cents": -5, "currency": "USD", "status": "A", "fee_cents": 1})
+    high = Message(topic="payments", partition=0, offset=16, key="k",
+                   value={"amount_cents": 200000, "currency": "USD", "status": "A", "fee_cents": 1})
+    vl = validate_message(rs, low)
+    vh = validate_message(rs, high)
+    assert any(x.check == "range" and "minimum" in x.message for x in vl)
+    assert any(x.check == "range" and "maximum" in x.message for x in vh)
+
+第 54 页
+Kafka-Govern V1.0
+
+def test_violation_non_null():
+    rs = _rs()
+    msg = Message(topic="payments", partition=0, offset=17, key="k",
+                  value={"amount_cents": 5, "currency": "USD", "status": "A", "fee_cents": None})
+    v = validate_message(rs, msg)
+    assert any(x.check == "non_null" and x.field == "fee_cents" for x in v)
+
+
+def test_violation_has_offset_key_and_rule():
+    rs = _rs()
+    msg = Message(topic="payments", partition=0, offset=42, key="pay_042",
+                  value={"amount_cents": "bad", "currency": "USD"})
+    v = validate_message(rs, msg)
+    assert all(item.offset == 42 and item.key == "pay_042" for item in v)
+
+
+def test_violation_to_dict_json_serializable():
+    rs = _rs()
+    msg = Message(topic="payments", partition=0, offset=1, key=b"bin\xffkey",
+                  value={"amount_cents": 0, "currency": 123})
+    v = validate_message(rs, msg)
+    d = [item.to_dict() for item in v]
+    json.dumps(d)  # must not raise
+
+
+def test_topic_mismatch_ignored():
+    rs = _rs()
+    msg = Message(topic="other-topic", partition=0, offset=0, key="k",
+                  value={"amount_cents": "bad"})
+    assert validate_message(rs, msg) == []
+
+
+def test_fixture_iter_messages():
+    path = FIXTURES / "messages" / "payments_messages.json"
+    msgs = list(iter_messages_from_json(path))
+    assert len(msgs) == 6
+    assert msgs[0].offset == 0
+    assert msgs[0].key == "pay_001"
+    assert msgs[3].offset == 3
+
+
+def test_fixture_validation_yields_expected_violations():
+    """AC #2 — five sample dirty messages are correctly reported with offsets."""
+    rs = load_rules_file(FIXTURES / "rules" / "rules_scale.yaml")
+    path = FIXTURES / "messages" / "payments_messages.json"
+    violations = validate_fixture_file(rs, path)
+    by_offset = {}
+    for v in violations:
+        by_offset.setdefault(v.offset, []).append(v)
+第 55 页
+Kafka-Govern V1.0
+
+    # message 1: negative amount + lowercase currency + (range violated too)
+    off1 = by_offset[1]
+    assert any(v.check == "range" and v.field == "amount_cents" for v in off1)
+    assert any(v.check == "pattern" and v.field == "currency" for v in off1)
+
+    # message 2: payment_id int (type) + amount_cents string (type)
+    off2 = by_offset[2]
+    assert any(v.check == "type" and v.field == "payment_id" for v in off2)
+    assert any(v.check == "type" and v.field == "amount_cents" for v in off2)
+
+    # message 3: missing payment_id (required), status EXPIRED (enum), fee_cents null (non_null)
+    off3 = by_offset[3]
+    assert any(v.check == "required" and v.field == "payment_id" for v in off3)
+    assert any(v.check == "enum" and v.field == "status" for v in off3)
+    assert any(v.check == "non_null" and v.field == "fee_cents" for v in off3)
+
+    # message 4: amount_cents > maximum
+    off4 = by_offset[4]
+    assert any(v.check == "range" and v.field == "amount_cents" and "maximum" in v.message for v in off4)
+
+    # message 5: amount_cents null (non_null)
+    off5 = by_offset[5]
+    assert any(v.check == "non_null" and v.field == "amount_cents" for v in off5)
+
+    # five dirty sample messages: offsets 1..5 each reported
+    assert set(by_offset) == {1, 2, 3, 4, 5}
+
+    # message 0 is clean
+    assert 0 not in by_offset
+# ===== File: tests/test_schema_diff.py =====
+"""P0 — schema diff engine tests."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from kgov.model import CompatibilityKind, SchemaFormat
+from kgov.schema_diff import (
+    SchemaParseError,
+    classify,
+    diff_avro,
+    diff_json_schema,
+    diff_schemas,
+    parse_schema,
+)
+
+
+第 56 页
+Kafka-Govern V1.0
+def _schema(s: dict) -> dict:
+    return json.loads(json.dumps(s))
+
+
+def test_avro_additive_optional_field():
+    old = {"type": "record", "name": "User", "fields": [{"name": "id", "type": "long"}]}
+    new = {
+        "type": "record",
+        "name": "User",
+        "fields": [
+            {"name": "id", "type": "long"},
+            {"name": "email", "type": ["null", "string"], "default": None},
+        ],
+    }
+    rep = diff_avro(_schema(old), _schema(new))
+    assert rep.kind == CompatibilityKind.ADDITIVE
+    assert rep.format == SchemaFormat.AVRO
+    findings = {(r["path"], r["kind"]) for r in rep.results}
+    assert ("email", CompatibilityKind.ADDITIVE) in findings
+
+
+def test_avro_breaking_removed_field():
+    old = {"type": "record", "name": "User", "fields": [{"name": "id", "type": "long"}, {"name": "x", "type": "string"}]}
+    new = {"type": "record", "name": "User", "fields": [{"name": "id", "type": "long"}]}
+    rep = diff_avro(_schema(old), _schema(new))
+    assert rep.kind == CompatibilityKind.BREAKING
+    findings = {(r["path"], r["kind"]) for r in rep.results}
+    assert ("x", CompatibilityKind.BREAKING) in findings
+
+
+def test_avro_breaking_required_field_added_without_default():
+    old = {"type": "record", "name": "User", "fields": [{"name": "id", "type": "long"}]}
+    new = {"type": "record", "name": "User", "fields": [{"name": "id", "type": "long"}, {"name": "new_req", "type": "string"}]}
+    rep = diff_avro(_schema(old), _schema(new))
+    assert rep.kind == CompatibilityKind.BREAKING
+    findings = {(r["path"], r["kind"]) for r in rep.results}
+    assert ("new_req", CompatibilityKind.BREAKING) in findings
+
+
+def test_avro_non_breaking_widen():
+    old = {"type": "record", "name": "User", "fields": [{"name": "id", "type": "int"}]}
+    new = {"type": "record", "name": "User", "fields": [{"name": "id", "type": "long"}]}
+    rep = diff_avro(_schema(old), _schema(new))
+    assert rep.kind == CompatibilityKind.NON_BREAKING
+    assert len(rep.results) >= 1
+
+
+def test_avro_breaking_narrow():
+    old = {"type": "record", "name": "User", "fields": [{"name": "id", "type": "long"}]}
+    new = {"type": "record", "name": "User", "fields": [{"name": "id", "type": "int"}]}
+第 57 页
+Kafka-Govern V1.0
+    rep = diff_avro(_schema(old), _schema(new))
+    assert rep.kind == CompatibilityKind.BREAKING
+
+
+def test_avro_enum_symbol_added_additive():
+    old = {"type": "enum", "name": "Color", "symbols": ["RED", "GREEN"]}
+    new = {"type": "enum", "name": "Color", "symbols": ["RED", "GREEN", "BLUE"]}
+    rep = diff_avro(_schema(old), _schema(new))
+    assert rep.kind == CompatibilityKind.ADDITIVE
+
+
+def test_avro_enum_symbol_removed_breaking():
+    old = {"type": "enum", "name": "Color", "symbols": ["RED", "GREEN"]}
+    new = {"type": "enum", "name": "Color", "symbols": ["RED"]}
+    rep = diff_avro(_schema(old), _schema(new))
+    assert rep.kind == CompatibilityKind.BREAKING
+
+
+def test_avro_record_renamed_breaking():
+    old = {"type": "record", "name": "Old", "fields": [{"name": "id", "type": "long"}]}
+    new = {"type": "record", "name": "New", "fields": [{"name": "id", "type": "long"}]}
+    rep = diff_avro(_schema(old), _schema(new))
+    assert rep.kind == CompatibilityKind.BREAKING
+
+
+def test_avro_fixed_size_change_breaking():
+    old = {"type": "fixed", "name": "F", "size": 8}
+    new = {"type": "fixed", "name": "F", "size": 16}
+    rep = diff_avro(_schema(old), _schema(new))
+    assert rep.kind == CompatibilityKind.BREAKING
+
+
+def test_avro_union_branch_removed_breaking():
+    old = {"type": "record", "name": "U", "fields": [{"name": "v", "type": ["null", "string", "int"]}]}
+    new = {"type": "record", "name": "U", "fields": [{"name": "v", "type": ["null", "string"]}]}
+    rep = diff_avro(_schema(old), _schema(new))
+    assert rep.kind == CompatibilityKind.BREAKING
+
+
+def test_json_add_optional_property():
+    old = {"type": "object", "properties": {"id": {"type": "integer"}}}
+    new = {"type": "object", "properties": {"id": {"type": "integer"}, "email": {"type": "string"}}}
+    rep = diff_json_schema(_schema(old), _schema(new))
+    assert rep.kind == CompatibilityKind.ADDITIVE
+    assert rep.format == SchemaFormat.JSON
+
+
+def test_json_property_now_required_breaking():
+    old = {"type": "object", "properties": {"id": {"type": "integer"}}}
+    new = {"type": "object", "properties": {"id": {"type": "integer"}}, "required": ["id"]}
+第 58 页
+Kafka-Govern V1.0
+    rep = diff_json_schema(_schema(old), _schema(new))
+    assert rep.kind == CompatibilityKind.BREAKING
+
+
+def test_json_property_removed_breaking():
+    old = {"type": "object", "properties": {"id": {"type": "integer"}, "x": {"type": "string"}}}
+    new = {"type": "object", "properties": {"id": {"type": "integer"}}}
+    rep = diff_json_schema(_schema(old), _schema(new))
+    assert rep.kind == CompatibilityKind.BREAKING
+
+
+def test_json_widen_number_additive():
+    old = {"type": "object", "properties": {"v": {"type": "integer"}}}
+    new = {"type": "object", "properties": {"v": {"type": "number"}}}
+    rep = diff_json_schema(_schema(old), _schema(new))
+    assert rep.kind == CompatibilityKind.ADDITIVE
+
+
+def test_json_narrow_integer_breaking():
+    old = {"type": "object", "properties": {"v": {"type": "number"}}}
+    new = {"type": "object", "properties": {"v": {"type": "integer"}}}
+    rep = diff_json_schema(_schema(old), _schema(new))
+    assert rep.kind == CompatibilityKind.BREAKING
+
+
+def test_json_enum_removed_breaking():
+    old = {"type": "string", "enum": ["a", "b"]}
+    new = {"type": "string", "enum": ["a"]}
+    rep = diff_json_schema(_schema(old), _schema(new))
+    assert rep.kind == CompatibilityKind.BREAKING
+
+
+def test_json_enum_added_additive():
+    old = {"type": "string", "enum": ["a", "b"]}
+    new = {"type": "string", "enum": ["a", "b", "c"]}
+    rep = diff_json_schema(_schema(old), _schema(new))
+    assert rep.kind == CompatibilityKind.ADDITIVE
+
+
+def test_parse_schema_auto_detects_format():
+    fmt, _ = parse_schema(json.dumps({"type": "record", "name": "A", "fields": []}))
+    assert fmt == SchemaFormat.AVRO
+    fmt2, _ = parse_schema(json.dumps({"$schema": "http://json-schema.org/draft-07/schema#", "type": "object"}))
+    assert fmt2 == SchemaFormat.JSON
+
+
+def test_parse_schema_invalid_json():
+    with pytest.raises(SchemaParseError):
+        parse_schema("{not valid json")
+
+第 59 页
+Kafka-Govern V1.0
+
+def test_diff_schemas_forwarding():
+    old = {"type": "record", "name": "A", "fields": [{"name": "x", "type": "int"}]}
+    new = {"type": "record", "name": "A", "fields": [{"name": "x", "type": "long"}]}
+    rep = diff_schemas(json.dumps(old), json.dumps(new), subject="s", before_version=1, after_version=2)
+    assert rep.kind == CompatibilityKind.NON_BREAKING
+
+
+def test_diff_across_formats_rejects():
+    with pytest.raises(SchemaParseError):
+        diff_schemas(
+            json.dumps({"type": "record", "name": "A", "fields": []}),
+            json.dumps({"type": "object", "properties": {}}),
+        )
+
+
+def test_classify_priority():
+    results = [
+        {"kind": CompatibilityKind.ADDITIVE, "path": "a", "message": "x"},
+        {"kind": CompatibilityKind.BREAKING, "path": "b", "message": "y"},
+    ]
+    assert classify(results) == CompatibilityKind.BREAKING
+    assert classify([{"kind": CompatibilityKind.ADDITIVE, "path": "a", "message": "x"}]) == CompatibilityKind.ADDITIVE
+    assert classify([{"kind": CompatibilityKind.NON_BREAKING, "path": "a", "message": "x"}]) == CompatibilityKind.NON_BREAKING
+
+
+def test_evolution_fixture_series(avro_series, json_series):
+    """Validate the schema-evolution fixture series classifies as intended."""
+    expected = {
+        "avro_removed_field": CompatibilityKind.BREAKING,
+        "avro_added_required_field": CompatibilityKind.BREAKING,
+        "avro_added_optional_field": CompatibilityKind.ADDITIVE,
+        "json_removed_property": CompatibilityKind.BREAKING,
+        "json_added_required": CompatibilityKind.BREAKING,
+        "json_added_optional": CompatibilityKind.ADDITIVE,
+        "json_widened": CompatibilityKind.ADDITIVE,
+        "json_narrowed": CompatibilityKind.BREAKING,
+    }
+    for fmt, fname in (("avro_series", "series"), ("json_series", "series")):
+        pass
+    for coll in (avro_series, json_series):
+        for block in coll["series"]:
+            for sub in block.get("series", []):
+                name = sub["name"]
+                if name not in expected:
+                    continue
+                before = sub["compare"]["before"]["schema"]
+                after = sub["compare"]["after"]["schema"]
+                rep = diff_schemas(before, after, subject=name)
+                assert rep.kind == expected[name], f"{name}: got {rep.kind}"
+第 60 页
