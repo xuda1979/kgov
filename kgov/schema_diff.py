@@ -169,7 +169,17 @@ def _types_assignable(a: Any, b: Any) -> bool:
 
 
 def _is_nullable(node: Any) -> bool:
-    return isinstance(node, list) and "null" in [x if isinstance(x, str) else x.get("type") for x in node]
+    if not isinstance(node, list):
+        return False
+    for x in node:
+        # junk union members (ints, bools, floats, lists, ...) carry no type
+        # name; only str/dict members can describe the "null" branch
+        if isinstance(x, str):
+            if x == "null":
+                return True
+        elif isinstance(x, dict) and x.get("type") == "null":
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------

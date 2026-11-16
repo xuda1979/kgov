@@ -197,6 +197,43 @@ def test_avro_junk_fields_tolerated():
     assert findings == {("email", CompatibilityKind.BREAKING)}
 
 
+def test_avro_union_junk_member_tolerated():
+    """A union whose members include non-str/non-dict junk (int/bool/None/
+    float/list) must not crash the union comparison (previously the nullable
+    check called .get() on a non-dict member). Junk members carry no type, so
+    the real 'string' branch is seen as removed/added and the diff classifies
+    honestly as Breaking; valid string members still diff to Non-Breaking."""
+    for jm in (42, True, None, 3.5, []):
+        old = {"type": "record", "name": "U", "fields": [{"name": "v", "type": ["null", "string"]}]}
+        new = {"type": "record", "name": "U", "fields": [{"name": "v", "type": ["null", jm]}]}
+        rep = diff_avro(_schema(old), _schema(new))
+        assert rep.kind == CompatibilityKind.BREAKING
+
+        old2 = {"type": "record", "name": "U", "fields": [{"name": "v", "type": ["null", jm]}]}
+        new2 = {"type": "record", "name": "U", "fields": [{"name": "v", "type": ["null", "string"]}]}
+        rep2 = diff_avro(_schema(old2), _schema(new2))
+        assert rep2.kind == CompatibilityKind.BREAKING
+
+    # valid string-carrying members are real union branches and diff cleanly
+    for jm in ("string", {"type": "string"}):
+        old = {"type": "record", "name": "U", "fields": [{"name": "v", "type": ["null", "string"]}]}
+        new = {"type": "record", "name": "U", "fields": [{"name": "v", "type": ["null", jm]}]}
+        rep = diff_avro(_schema(old), _schema(new))
+        assert rep.kind == CompatibilityKind.NON_BREAKING
+
+
+def test_avro_new_field_nullable_junk_union_tolerated():
+    """A NEW field whose union type contains junk members must not crash the
+    new-field nullable detection (previously AttributeError on .get())."""
+    old = {"type": "record", "name": "A", "fields": [{"name": "id", "type": "long"}]}
+    new = {"type": "record", "name": "A", "fields": [
+        {"name": "id", "type": "long"},
+        {"name": "email", "type": ["null", 42]},
+    ]}
+    rep = diff_avro(_schema(old), _schema(new))
+    assert rep.kind in (CompatibilityKind.ADDITIVE, CompatibilityKind.NON_BREAKING)
+
+
 def test_avro_enum_junk_symbols_tolerated():
     """An enum whose `symbols` list contains unhashable junk (dicts/lists)
     must not crash on set arithmetic."""
