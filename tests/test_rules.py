@@ -73,6 +73,17 @@ def test_load_rules_yaml_invalid():
         load_rules_yaml("{ unclosed")
 
 
+def test_load_rules_yaml_junk_text_args_raise_rules_config_error():
+    """A rules text argument that is not a YAML string (int, float, list,
+    tuple, dict, None, bool, bytes) must raise a clean RulesConfigError
+    rather than a raw AttributeError from yaml.safe_load reaching for a
+    missing .read()."""
+    junk = (123, 2.5, [1], (1,), {"k": 1}, None, True, b"b")
+    for bad in junk:
+        with pytest.raises(RulesConfigError, match="YAML string"):
+            load_rules_yaml(bad)
+
+
 def test_load_rules_file_invalid_utf8_rejected(tmp_path):
     """A rules file with non-UTF-8 bytes must raise a clean RulesConfigError,
     not leak a UnicodeDecodeError traceback."""

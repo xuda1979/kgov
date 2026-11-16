@@ -88,6 +88,12 @@ class RuleSet:
 
 def load_rules_yaml(text: str) -> RuleSet:
     """Parse a rules YAML string into a RuleSet."""
+    if not isinstance(text, str):
+        # junk values (ints, lists, dicts, None, ...) are not YAML text —
+        # yaml.safe_load would raise a raw AttributeError reaching for a
+        # missing .read(); bytes is rejected too (YAML text is a str; use
+        # load_rules_file for real files)
+        raise RulesConfigError(f"rules text must be a YAML string: {text!r}")
     try:
         data = yaml.safe_load(text)
     except yaml.YAMLError as exc:
