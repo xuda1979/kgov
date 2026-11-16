@@ -161,6 +161,14 @@ class NeedsBrokerError(ImportError):
     """Raised when a broker feature is used without confluent-kafka installed."""
 
 
+class BrokerConnectError(RuntimeError):
+    """Raised when the bootstrap cluster cannot be reached at all.
+
+    A scan against a dead broker yields no messages; failing fast (instead of
+    returning an empty list) keeps a ``check`` gate from passing vacuously.
+    """
+
+
 def _require_kafka() -> None:
     try:
         import confluent_kafka  # noqa: F401
@@ -272,7 +280,11 @@ def read_topic(
     values that are not valid JSON (e.g. an :class:`AvroRecordDecoder`).
     """
     _require_kafka()
-    from confluent_kafka import Consumer, KafkaError, KafkaException
+    from confluent_kafka import KafkaError, KafkaException
+
+    # Fail fast when the cluster is unreachable: a scan of a dead broker
+    # yields no messages, which would otherwise pass a check gate vacuously.
+    _probe_bootstrap(bootstrap, timeout)
 
     unique_group = f"{group_id}-{id(object()):x}"
     conf = {
@@ -313,6 +325,26 @@ def read_topic(
     finally:
         consumer.close()
     return out
+
+
+def _probe_bootstrap(bootstrap: str, timeout: float) -> None:
+    """Raise :class:`BrokerConnectError` when the cluster is unreachable.
+
+    Uses the admin client's metadata call because it propagates the
+    ``_TRANSPORT`` failure deterministically on an unreachable cluster while
+    returning (with metadata) against a reachable cluster even when the topic
+    itself does not exist. A scan of a dead broker otherwise yields no
+    messages and a ``check`` gate would pass vacuously.
+    """
+    from confluent_kafka.admin import AdminClient
+
+    admin = AdminClient(
+        {"bootstrap.servers": bootstrap, "log_level": 0, "socket.timeout.ms": int(timeout * 1000)}
+    )
+    try:
+        admin.list_topics(timeout=timeout)
+    except Exception as exc:
+        raise BrokerConnectError(f"cannot reach broker {bootstrap!r}: {exc}") from exc
 
 
 def _now_ms() -> int:

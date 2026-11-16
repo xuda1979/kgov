@@ -207,7 +207,13 @@ def _validate(rs, messages_path: Optional[str], broker_url: Optional[str], topic
             from .registry import SchemaRegistryClient
 
             decoder = AvroRecordDecoder(SchemaRegistryClient(registry_url))
-        msgs = read_topic(broker_url, topic, value_decoder=decoder)
+        try:
+            msgs = read_topic(broker_url, topic, value_decoder=decoder)
+        except Exception as exc:
+            # Unreachable broker, transport failure, missing confluent-kafka:
+            # surface as a clean runtime error instead of a raw traceback and
+            # never let an empty read pass the gate silently.
+            raise CliError(f"broker scan failed: {exc}") from exc
         return [
             v
             for m in msgs

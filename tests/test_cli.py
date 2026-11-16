@@ -129,6 +129,23 @@ def test_check_missing_config(capsys):
     assert code == 3
 
 
+def test_check_broker_scan_failure_exit_3(capsys, monkeypatch):
+    """A broker scan that fails (unreachable cluster) must exit 3 with a clean
+    error — never pass the gate with zero violations."""
+    rules = FIXTURES / "rules" / "rules_scale.yaml"
+
+    def boom(bootstrap, topic, value_decoder=None, **kwargs):
+        raise RuntimeError("cannot reach broker")
+
+    monkeypatch.setattr("kgov.broker.read_topic", boom)
+    monkeypatch.setattr("kgov.broker.AvroRecordDecoder", lambda *a, **k: None)
+    code = main(["check", "--config", str(rules),
+                 "--broker", "127.0.0.1:9", "--topic", "payments", "--quiet"])
+    out = capsys.readouterr()
+    assert code == 3
+    assert "broker scan failed" in out.err
+
+
 # ---------------------------------------------------------------------------
 # report
 # ---------------------------------------------------------------------------

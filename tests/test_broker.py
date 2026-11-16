@@ -214,6 +214,43 @@ def test_broker_error_message():
     assert "kgov[broker]" in str(err)
 
 
+# ---------------------------------------------------------------------------
+# Connectivity probe
+# ---------------------------------------------------------------------------
+
+
+def test_probe_bootstrap_unreachable_raises(monkeypatch):
+    """A scan of a dead cluster must fail fast, not silently return []."""
+    from kgov import broker
+    from kgov.broker import BrokerConnectError
+
+    class FakeAdminClient:
+        def __init__(self, conf):
+            self.conf = conf
+
+        def list_topics(self, timeout: float = 10.0):
+            raise RuntimeError("Failed to get metadata: _TRANSPORT")
+
+    monkeypatch.setattr("confluent_kafka.admin.AdminClient", FakeAdminClient)
+    with pytest.raises(BrokerConnectError, match="cannot reach broker"):
+        broker._probe_bootstrap("127.0.0.1:9", timeout=1)
+
+
+def test_probe_bootstrap_reachable_ok(monkeypatch):
+    """A reachable cluster (even with an unknown topic) must not raise."""
+    from kgov import broker
+
+    class FakeAdminClient:
+        def __init__(self, conf):
+            self.conf = conf
+
+        def list_topics(self, timeout: float = 10.0):
+            return type("MD", (), {"topics": {}})()
+
+    monkeypatch.setattr("confluent_kafka.admin.AdminClient", FakeAdminClient)
+    broker._probe_bootstrap("127.0.0.1:9", timeout=1)  # must not raise
+
+
 @pytest.mark.skipif(
     not os.environ.get("KGOV_LIVE_BROKER"),
     reason="set KGOV_LIVE_BROKER=host:port to run live broker integration",
