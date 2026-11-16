@@ -121,7 +121,12 @@ def build_topic_state(
     # schema state from registry subject
     subject = topic.get("schema_subject")
     ts.schema_subject = subject
-    versions = registry.get("subjects", {}).get(subject, []) if subject else []
+    subjects = registry.get("subjects", {}) if isinstance(registry, dict) else {}
+    if not isinstance(subjects, dict):
+        # a malformed registry (subjects entry that is not a mapping) carries
+        # no resolvable versions — ignore it rather than crash on .get
+        subjects = {}
+    versions = subjects.get(subject, []) if subject else []
     if versions:
         latest = versions[-1]
         ts.schema_version = latest.get("version")
@@ -188,6 +193,11 @@ def build_governance_report(
     topics = topics_fixture if isinstance(topics_fixture, list) else _read_json(topics_fixture)
     if isinstance(topics, dict):
         topics = topics.get("topics", [])
+    if not isinstance(topics, list):
+        raise ValueError(
+            f"topics fixture must resolve to a list of topic mappings "
+            f"(got {type(topics).__name__}): {topics!r}"
+        )
 
     registry = {}
     if registry_fixture:

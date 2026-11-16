@@ -151,3 +151,28 @@ def test_non_mapping_registry_is_ignored():
     orders = rep.topics[0]
     assert orders.schema_state == "NONE"
     assert orders.schema_version is None
+
+
+def test_registry_subjects_as_list_is_ignored():
+    """A registry whose 'subjects' entry is a list (not a mapping) must be
+    ignored instead of crashing on .get() when a topic references a subject."""
+    rep = build_governance_report(
+        topics_fixture=[{"name": "payments", "schema_subject": "payments-value"}],
+        registry_fixture={"subjects": [{"version": 1, "compatibility": "COMPATIBLE"}]},
+        now=NOW,
+    )
+    payments = rep.topics[0]
+    assert payments.schema_state == "NONE"
+    assert payments.schema_version is None
+
+
+def test_topics_fixture_non_list_raises_value_error(tmp_path):
+    """A topics fixture that does not resolve to a list (e.g. null) must fail
+    with a clean ValueError rather than a TypeError on iteration."""
+    fixture = tmp_path / "topics_null.json"
+    fixture.write_text(json.dumps({"topics": None}), encoding="utf-8")
+    with pytest.raises(ValueError, match="resolve to a list of topic mappings"):
+        build_governance_report(
+            topics_fixture=fixture,
+            now=NOW,
+        )
