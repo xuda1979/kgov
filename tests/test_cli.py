@@ -156,6 +156,18 @@ def test_report_requires_topics(capsys):
     assert code == 2
 
 
+def test_report_missing_rules_file_exit_3(capsys):
+    """report --rules must fail cleanly (exit 3), not crash on FileNotFoundError."""
+    code = main([
+        "report", "--topics", str(FIXTURES / "topics" / "topics.json"),
+        "--rules", "/no/rules.yaml",
+        "--messages", str(FIXTURES / "messages" / "payments_messages.json"),
+    ])
+    assert code == 3
+    out = capsys.readouterr()
+    assert "--rules file missing" in out.err
+
+
 # ---------------------------------------------------------------------------
 # export
 # ---------------------------------------------------------------------------

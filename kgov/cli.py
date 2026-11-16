@@ -354,6 +354,8 @@ def cmd_report(args) -> int:
     if args.rules and args.messages:
         if not Path(args.messages).exists():
             raise CliError(f"--messages file missing: {args.messages}")
+        if not Path(args.rules).exists():
+            raise CliError(f"--rules file missing: {args.rules}")
         try:
             rs = load_rules_file(args.rules)
             violations = validate_fixture_file(rs, args.messages)
