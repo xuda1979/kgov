@@ -232,6 +232,32 @@ def test_json_properties_list_tolerated():
     assert rep.kind in (CompatibilityKind.NON_BREAKING, CompatibilityKind.ADDITIVE)
 
 
+def test_json_junk_anyof_tolerated():
+    """A JSON Schema whose `anyOf`/`oneOf` is non-list junk (int, null, ...)
+    must not crash on iteration; only list branches contribute types."""
+    old = {"$schema": "http://json-schema.org/draft-07/schema#",
+           "type": "object", "properties": {"a": {"type": "string"}}}
+    for junk in (5, None, "str"):
+        new = {"$schema": "http://json-schema.org/draft-07/schema#",
+               "type": "object",
+               "properties": {"a": {"anyOf": junk}}}
+        rep = diff_json_schema(_schema(old), _schema(new))
+        assert rep.kind in (CompatibilityKind.NON_BREAKING, CompatibilityKind.ADDITIVE)
+
+
+def test_json_type_list_junk_members_tolerated():
+    """A JSON Schema `type` array containing unhashable junk (dicts) must not
+    crash on set membership; only string members describe types."""
+    old = {"$schema": "http://json-schema.org/draft-07/schema#",
+           "type": "object", "properties": {"a": {"type": "string"}}}
+    new = {"$schema": "http://json-schema.org/draft-07/schema#",
+           "type": "object",
+           "properties": {"a": {"type": ["string", {"junk": True}]}}}
+    rep = diff_json_schema(_schema(old), _schema(new))
+    # junk member skipped; "string" still resolves as the accepted type
+    assert rep.kind in (CompatibilityKind.NON_BREAKING, CompatibilityKind.ADDITIVE)
+
+
 def test_json_junk_bounds_tolerated():
     """Non-numeric bound values (string vs int) in minLength/minItems must not
     crash on `>` between mismatched types; numeric tightening still works."""

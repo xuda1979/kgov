@@ -383,11 +383,16 @@ def _js_string_types(node: Any) -> set:
     if isinstance(t, str):
         return {t}
     if isinstance(t, list):
-        return set(t)
+        # only string entries describe a type; junk (dicts, lists, ...) would
+        # be unhashable in set building below
+        return {x for x in t if isinstance(x, str)}
     out: set = set()
     for key in ("anyOf", "oneOf"):
-        if key in node:
-            for sub in node[key]:
+        branches = node.get(key)
+        # only a list of branches describes accepted types; junk values
+        # (ints, strings, dicts, ...) would crash the iteration below
+        if isinstance(branches, list):
+            for sub in branches:
                 out |= _js_string_types(sub)
     if "enum" in node:
         return { "enum" }
