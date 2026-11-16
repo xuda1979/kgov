@@ -63,6 +63,23 @@ def test_schema_diff_missing_file(capsys):
     assert code == 3
 
 
+def test_schema_diff_compact_registry_ref(server) -> None:
+    """Shorthand refs ``host:port/subject/version`` resolve against a registry."""
+    ref1 = f"{server.base_url}/payments-value/1"
+    ref2 = f"{server.base_url}/payments-value/2"
+    code, out, _ = _run(
+        "schema-diff",
+        "--before", ref1.replace("http://", ""),
+        "--after", ref2.replace("http://", ""),
+        "--subject", "payments-value", "--json",
+    )
+    assert code == 0
+    data = json.loads(out)
+    assert data["subject"] == "payments-value"
+    assert data["kind"] == CompatibilityKind.ADDITIVE
+    assert any("fee_cents" in r["path"] for r in data["results"])
+
+
 # ---------------------------------------------------------------------------
 # check
 # ---------------------------------------------------------------------------

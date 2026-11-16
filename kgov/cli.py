@@ -111,12 +111,12 @@ def _load_schema_text(ref: str, fmt: Optional[str]):
         return body, fmt
 
     if ref.count(":") == 1 and not Path(ref).exists():
-        # <registry-url>/<subject>/<version> in a single CLI arg.
-        from urllib.parse import quote
-
+        # Shorthand ``[http://]registry-url/subject/version`` in a single arg.
         try:
             url, subject, version = ref.split("/", 2)
-            base = url.replace("|", "//")
+            base = url
+            if not url.startswith("http"):
+                base = f"http://{url}"
             from .registry import SchemaRegistryClient
 
             client = SchemaRegistryClient(base)
