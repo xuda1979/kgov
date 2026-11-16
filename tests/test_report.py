@@ -238,6 +238,26 @@ def test_tags_null_or_non_list_ignored():
     assert d["payments"].tags == ["core"]
 
 
+def test_partitions_and_replication_junk_fall_back_to_defaults():
+    """Missing/non-numeric partitions or replication_factor must not crash
+    (e.g. int(None) / int([1])) and fall back to sensible defaults."""
+    rep = build_governance_report(
+        topics_fixture=[
+            {"name": "a", "partitions": None, "replication_factor": [2]},
+            {"name": "b", "partitions": 4, "replication_factor": "3"},
+            {"name": "c", "partitions": True},
+        ],
+        now=NOW,
+    )
+    d = {t.name: t for t in rep.topics}
+    assert d["a"].partitions == 1
+    assert d["a"].replication_factor == 1
+    assert d["b"].partitions == 4
+    assert d["b"].replication_factor == 3
+    # bool is technically an int subclass; the default path is the important part
+    assert isinstance(d["c"].partitions, int)
+
+
 def test_registry_junk_version_entries_ignored():
     """A registry subject version list containing non-dict junk (even as the
     last/latest entry) must not crash the report build."""

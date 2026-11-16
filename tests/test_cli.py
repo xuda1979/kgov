@@ -315,6 +315,24 @@ def test_report_tags_null_or_non_list_exit_0(tmp_path, capsys):
     assert d["payments"]["tags"] == ["core"]
 
 
+def test_report_partitions_junk_exit_0(tmp_path, capsys):
+    """Non-numeric/null partitions or replication_factor must fall back to
+    defaults (exit 0), not crash with int(None)/int(list) TypeError."""
+    fixture = tmp_path / "topics.json"
+    fixture.write_text('{"topics": [{"name": "orders", "partitions": null, '
+                       '"replication_factor": 3}, {"name": "payments", '
+                       '"partitions": 6, "replication_factor": [1]}]}',
+                       encoding="utf-8")
+    code = main(["report", "--topics", str(fixture)])
+    assert code == 0
+    data = json.loads(capsys.readouterr().out)
+    d = {t["name"]: t for t in data["topics"]}
+    assert d["orders"]["partitions"] == 1
+    assert d["orders"]["replication_factor"] == 3
+    assert d["payments"]["partitions"] == 6
+    assert d["payments"]["replication_factor"] == 1
+
+
 def test_report_groups_junk_topic_keys_exit_0(tmp_path, capsys):
     """A list-form groups fixture whose topic/group key is non-string (list)
     must be skipped cleanly (exit 0), not crash on an unhashable key."""

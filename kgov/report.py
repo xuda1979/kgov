@@ -119,8 +119,15 @@ def build_topic_state(
     ts.owner = topic.get("owner") or "unknown"
     tags = topic.get("tags", [])
     ts.tags = list(tags) if isinstance(tags, list) else []
-    ts.partitions = int(topic.get("partitions", 1))
-    ts.replication_factor = int(topic.get("replication_factor", 1))
+
+    def _to_int(value: Any, default: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    ts.partitions = _to_int(topic.get("partitions"), 1)
+    ts.replication_factor = _to_int(topic.get("replication_factor"), 1)
 
     # schema state from registry subject
     subject = topic.get("schema_subject")
