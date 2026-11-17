@@ -48,7 +48,10 @@ def _json_safe(value: Any) -> Any:
     into plain JSON-safe forms so ``to_dict()`` output can go straight to
     ``json.dumps`` with no ``default=`` hook. Unchanged leaves stay as-is."""
     if isinstance(value, dict):
-        return {k: _json_safe(v) for k, v in value.items()}
+        # dict keys are NOT coerced by the recursion below; byte/tuple keys
+        # would make json.dumps raw-crash ("keys must be str, int, float,
+        # bool or None"). Coerce non-JSON-safe keys like rules._json_safe_key.
+        return {_json_safe_key(k): _json_safe(v) for k, v in value.items()}
     if isinstance(value, (list, tuple, set)):
         return [_json_safe(v) for v in value]
     if isinstance(value, (bytes, bytearray)):
@@ -57,6 +60,23 @@ def _json_safe(value: Any) -> Any:
         except UnicodeDecodeError:
             return value.hex()
     return value
+
+
+def _json_safe_key(key: Any) -> Any:
+    """Coerce a dict key to a type json.dumps accepts (str, int, float, bool,
+    None). Bytes/bytearray decode like their value counterparts (utf-8, or a
+    hex fallback); anything else that is not already JSON-safe is stringified
+    so the exported dict stays dumpable instead of raw-crashing."""
+    if isinstance(key, (bytes, bytearray)):
+        try:
+            return key.decode("utf-8")
+        except UnicodeDecodeError:
+            # a {$bytes: hex} dict is unhashable, so it can't be a dict key —
+            # fall back to a hashable JSON-safe string marker instead
+            return f"$bytes:{key.hex()}"
+    if isinstance(key, (str, int, float, bool)) or key is None:
+        return key
+    return str(key)
 
 
 # ---------------------------------------------------------------------------

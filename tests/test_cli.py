@@ -486,6 +486,21 @@ def test_output_to_missing_directory_exit_3(capsys):
     assert "is a directory" in capsys.readouterr().err
 
 
+def test_write_out_junk_text_no_traceback(capsys):
+    """``cli._write_out`` with a none-str ``text`` (a direct library caller)
+    must render via str() instead of raw-crashing on ``text.endswith``."""
+    from kgov.cli import _write_out
+
+    for text in (None, 42, 3.5, b"x", ["a"], {"a": 1}, {"s"}, (1, 2)):
+        _write_out(None, text)  # stdin/stdout path; must not raise
+    # valid str behavior is preserved: exactly one trailing newline
+    for text in ("hello", "hello\n", "multi\nline"):
+        capsys.readouterr()
+        _write_out(None, text)
+        out = capsys.readouterr().out
+        assert out == text if text.endswith("\n") else out == text + "\n"
+
+
 # ---------------------------------------------------------------------------
 # export
 # ---------------------------------------------------------------------------

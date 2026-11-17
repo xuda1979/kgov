@@ -539,3 +539,31 @@ def test_report_to_dict_json_serializable_with_junk_results():
     # untouched scalar fields survive with their original type
     assert d["before_version"] == 1
     assert d["compatible"] is True
+
+
+def test_json_safe_coerces_junk_dict_keys():
+    """``model._json_safe`` must coerce non-JSON-safe dict KEYS (bytes,
+    bytearray, tuple, set, ...) so a bare ``json.dumps`` of the result never
+    raw-crashes with "keys must be str, int, float, bool or None"."""
+    import json
+
+    from kgov.model import _json_safe
+
+    v = {
+        b"bytes-key": 1,
+        b"\xff": 2,
+        ("tuple", "key"): 4,
+        frozenset({5}): 6,
+        "plain": {"nested": {b"deep": 7}},
+    }
+    out = _json_safe(v)
+    assert isinstance(out, dict)
+    assert json.dumps(out, indent=2, ensure_ascii=False)  # must not raise
+    # decode-able bytes keys become str; undecodable bytes get a hashable
+    # string marker (a {$bytes: hex} dict is unhashable and cannot be a key)
+    assert out["bytes-key"] == 1
+    assert out["$bytes:ff"] == 2
+    # non-JSON-safe keys are stringified; JSON-safe keys survive unchanged
+    assert out["('tuple', 'key')"] == 4
+    assert out["frozenset({5})"] == 6
+    assert out["plain"]["nested"]["deep"] == 7

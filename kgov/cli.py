@@ -79,7 +79,19 @@ def _write_out(path: Optional[str], text: str, force: bool = False) -> None:
     elif force:
         raise CliError(f"no output path given (required for this export): {path!r}")
     else:
-        print(text, end="" if text.endswith("\n") else "\n")
+        # junk text (None, ints, bytes, containers, ...) from a direct library
+        # caller would raw-crash on endswith(); render it via str() instead of
+        # enforcing newline normalization
+        try:
+            needs_newline = not text.endswith("\n")
+        except (AttributeError, TypeError):
+            # junk text (None, ints, bytes, containers, ...) from a direct
+            # library caller would raw-crash on endswith(); render it via
+            # str() instead of enforcing newline normalization. bytes needs a
+            # bytes arg (TypeError, not AttributeError), so catch both.
+            print(str(text))
+            return
+        print(text, end="" if not needs_newline else "\n")
 
 
 def _load_json_or_exit(path: str):
