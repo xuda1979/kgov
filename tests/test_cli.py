@@ -666,6 +666,51 @@ def test_export_check_csv_unsupported_exit_3(capsys):
     assert "json" in capsys.readouterr().err
 
 
+def test_direct_subcommand_format_axes_pinned(capsys):
+    """Each direct subcommand's own --format/--markdown axis must be enforced
+    at the parser (exit 2 usage error on out-of-choices values) and accepted
+    for the intended values: check only accepts json, report accepts json|csv,
+    schema-diff accepts avro|json and --markdown. Pins the direct-subcommand
+    axis (the export battery only pins the --type route)."""
+    def go(argv):
+        import contextlib
+        import io
+
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = main(list(argv))
+        except SystemExit as exc:  # pragma: no cover - safety net
+            code = int(exc.code or 0)
+        return code, out.getvalue(), err.getvalue()
+
+    v1, v2 = str(FIXTURES / "schemas" / "v1.json"), str(FIXTURES / "schemas" / "v2.json")
+
+    # check: only json is a valid choice; csv is a usage error (2)
+    for junk in ("csv", "markdown", "xml"):
+        code, _, err = go(["check", "--config", str(FIXTURES / "rules" / "rules_scale.yaml"),
+                           "--messages", str(FIXTURES / "messages" / "payments_messages.json"),
+                           "--format", junk])
+        assert code == 2, junk
+        assert "Traceback" not in err
+
+    # report: json|csv are valid; xml is a usage error (2)
+    code, _, err = go(["report", "--topics", str(FIXTURES / "topics" / "topics.json"),
+                       "--format", "xml"])
+    assert code == 2
+    assert "Traceback" not in err
+
+    # schema-diff: avro|json are valid; yaml is a usage error (2)
+    for junk in ("yaml", "xml", "markdown"):
+        code, _, err = go(["schema-diff", "--before", v1, "--after", v2,
+                           "--format", junk])
+        assert code == 2, junk
+        assert "Traceback" not in err
+    code, _, _ = go(["schema-diff", "--before", v1, "--after", v2,
+                     "--format", "avro"])
+    assert code == 0
+
+
 def test_export_violations_alias_routes_to_check(capsys):
     """export --type violations is an alias for check (cli.cmd_export:529-531);
     it must run the full check gate and reject non-JSON formats cleanly."""
@@ -743,6 +788,21 @@ def test_registry_cli_junk_timeout_exit_3(server, capsys) -> None:
     code, out, _ = _run("registry", "--registry-url", server.base_url,
                         "--timeout", "0")
     assert code == 0
+
+
+def test_registry_cli_output_write_fails_closed(server) -> None:
+    """cmd_registry's -o path (reached only after a successful registry
+    request) must reuse the shared _write_out fail-closed contract: a
+    nonexistent directory or a directory target exits 3 with a clean error,
+    never a raw FileNotFoundError/IsADirectoryError traceback."""
+    for out, expected in (("/no/such/dir/out.json", "no such directory"),
+                          ("/tmp", "is a directory")):
+        code, _, err = _run("registry", "--registry-url", server.base_url,
+                            "-o", out)
+        assert code == 3, out
+        assert "cannot write output" in err, out
+        assert expected in err, out
+        assert "Traceback" not in err, out
 
 
 def test_registry_wire_mode_single_response(server) -> None:
@@ -1252,6 +1312,38 @@ def test_topics_dispatch_exit_codes(monkeypatch, capsys):
     assert main(["topics", "--bootstrap", "127.0.0.1:9092"]) == 0
     data = json.loads(capsys.readouterr().out)
     assert data["topics"] == ["payments", "orders"]
+
+
+def test_cmd_topics_output_write_fails_closed(monkeypatch, tmp_path):
+    """cmd_topics's -o path (reached only after list_topics succeeds) must
+    reuse the shared _write_out fail-closed contract — a nonexistent directory
+    or a directory target raises the clean CliError, and a valid path writes
+    the payload file with exit 0."""
+    import argparse
+
+    from kgov.broker import _require_timeout
+    from kgov.cli import CliError, cmd_topics
+
+    def fake_list_topics(bootstrap, timeout=10.0):
+        _require_timeout(timeout)
+        return ["payments"]
+
+    monkeypatch.setattr("kgov.broker.list_topics", fake_list_topics)
+
+    ns = argparse.Namespace
+    for out, expected in (("/no/such/dir/out.json", "no such directory"),
+                          ("/tmp", "is a directory")):
+        with pytest.raises(CliError) as exc:
+            cmd_topics(ns(bootstrap="127.0.0.1:9092", output=out,
+                          timeout=None))
+        assert "cannot write output" in str(exc.value)
+        assert expected in str(exc.value)
+
+    good = tmp_path / "topics.json"
+    assert cmd_topics(ns(bootstrap="127.0.0.1:9092", output=str(good),
+                         timeout=None)) == 0
+    data = json.loads(good.read_text(encoding="utf-8"))
+    assert data["topics"] == ["payments"]
 
 
 def test_load_schema_text_tolerates_junk_refs_fail_closed():
