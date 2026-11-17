@@ -30,6 +30,23 @@ JUICE = [
     {"x": {"y": 2}}, set(), {1, 2}, (1, 2), (), type(None), object(),
 ]
 
+# Self-referencing containers: json.dumps handles them with a designed
+# ValueError ("Circular reference detected") but naive recursive coercers
+# (model._json_safe) recurse forever and exit as a genuine RecursionError.
+def _cyclic_list() -> list:
+    cycle = []
+    cycle.append(cycle)
+    return cycle
+
+
+def _cyclic_dict() -> dict:
+    cycle = {}
+    cycle["self"] = cycle
+    return cycle
+
+
+JUICE += [_cyclic_list(), _cyclic_dict()]
+
 # Designed typed errors that are *not* ValueError subclasses.  ValueError
 # subclasses (SchemaParseError, RulesConfigError/RuleFieldConfigError/
 # UnknownFieldTypeError, RegistryError) are covered by the ValueError arm.

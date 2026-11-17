@@ -41,12 +41,23 @@ def _printable(value: Any) -> str:
         return repr(value)
 
 
-def _desc(value: Any) -> str:
+def _desc(value: Any, _seen: Optional[set] = None) -> str:
     """Short text description of a schema node for messages."""
     if isinstance(value, str):
         return f"`{value}`"
     if isinstance(value, list):
-        return " | ".join(_desc(v) for v in value)
+        # a self-referencing list would recurse forever (RecursionError on
+        # the diff path); cycle-tracking turns it back into its repr
+        if _seen is None:
+            _seen = set()
+        vid = id(value)
+        if vid in _seen:
+            return repr(value)
+        _seen.add(vid)
+        try:
+            return " | ".join(_desc(v, _seen) for v in value)
+        finally:
+            _seen.discard(vid)
     if isinstance(value, dict):
         t = value.get("type")
         if isinstance(t, str) and t not in ("record", "enum", "fixed", "array", "map"):
@@ -125,29 +136,51 @@ def parse_schema_text(text: str, format: Optional[str] = None) -> tuple:
     return parse_schema(text, format)
 
 
-def _name_of(node: Any) -> str:
+def _name_of(node: Any, _seen: Optional[set] = None) -> str:
     if isinstance(node, str):
         return node
     if isinstance(node, list):
-        return _name_of(node[0]) if node else ""
+        # a self-referencing list would recurse forever below; fail closed
+        # to "" like any other name-less node
+        if _seen is None:
+            _seen = set()
+        vid = id(node)
+        if vid in _seen:
+            return ""
+        _seen.add(vid)
+        try:
+            return _name_of(node[0], _seen) if node else ""
+        finally:
+            _seen.discard(vid)
     if isinstance(node, dict):
         return str(node.get("name") or node.get("type") or "")
     return ""
 
 
-def _type_names(node: Any) -> set:
+def _type_names(node: Any, _seen: Optional[set] = None) -> set:
     """Set of Avro type names a node may produce (named types included)."""
     if isinstance(node, str):
         return {node}
     if isinstance(node, list):
-        out: set = set()
-        for b in node:
-            out |= _type_names(b)
-        return out
+        # a self-referencing list would recurse forever below (RecursionError
+        # on the diff path); fail closed to the empty set
+        if _seen is None:
+            _seen = set()
+        vid = id(node)
+        if vid in _seen:
+            return set()
+        _seen.add(vid)
+        try:
+            out: set = set()
+            for b in node:
+                out |= _type_names(b, _seen)
+            return out
+        finally:
+            _seen.discard(vid)
     if isinstance(node, dict):
         t = node.get("type")
         if isinstance(t, list):
-            return _type_names(t)
+            return _type_names(t, _seen)
         # junk type tokens (dicts, ...) are unhashable in set membership; only
         # a string token names a type (a dict without one is a record ref)
         return {t} if isinstance(t, str) else {"record"}

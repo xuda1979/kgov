@@ -43,23 +43,50 @@ def json_default(obj: Any) -> Any:
     return repr(obj)
 
 
-def _json_safe(value: Any) -> Any:
+def _json_safe(value: Any, _seen: Optional[set] = None) -> Any:
     """Recursively coerce non-JSON-safe values (bytes, bytearray, memoryview,
     set, tuple) into plain JSON-safe forms so that ``to_dict()`` output can go
     straight to ``json.dumps`` with no ``default=`` hook. Unchanged leaves
-    stay as-is."""
+    stay as-is.
+
+    Self-referencing containers (a dict/list/set holding itself, directly or
+    transitively) would recurse forever and exit as a raw RecursionError on
+    the export path; cycle-tracking turns them back into a string leaf so
+    they serialize like any other junk value.
+    """
     if isinstance(value, memoryview):
         # memoryview is byte-like but not bytes/bytearray, so the byte path
         # below would not see it; materialize the buffer into bytes so it is
         # decoded (utf-8) or hexed like any other raw byte container
         value = bytes(value)
     if isinstance(value, dict):
-        # dict keys are NOT coerced by the recursion below; byte/tuple keys
-        # would make json.dumps raw-crash ("keys must be str, int, float,
-        # bool or None"). Coerce non-JSON-safe keys like rules._json_safe_key.
-        return {_json_safe_key(k): _json_safe(v) for k, v in value.items()}
+        if _seen is None:
+            _seen = set()
+        vid = id(value)
+        if vid in _seen:
+            # a cyclic container would recurse forever (RecursionError on the
+            # export path); hand back its repr — already a JSON-safe leaf
+            return repr(value)
+        _seen.add(vid)
+        try:
+            # dict keys are NOT coerced by the recursion below; byte/tuple
+            # keys would make json.dumps raw-crash ("keys must be str, int,
+            # float, bool or None"). Coerce non-JSON-safe keys like
+            # rules._json_safe_key.
+            return {_json_safe_key(k): _json_safe(v, _seen) for k, v in value.items()}
+        finally:
+            _seen.discard(vid)
     if isinstance(value, (list, tuple, set)):
-        return [_json_safe(v) for v in value]
+        if _seen is None:
+            _seen = set()
+        vid = id(value)
+        if vid in _seen:
+            return repr(value)
+        _seen.add(vid)
+        try:
+            return [_json_safe(v, _seen) for v in value]
+        finally:
+            _seen.discard(vid)
     if isinstance(value, (bytes, bytearray)):
         try:
             return value.decode("utf-8")
