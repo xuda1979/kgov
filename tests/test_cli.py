@@ -935,6 +935,50 @@ def test_registry_wire_permutation_grid_single_response(server) -> None:
         )
 
 
+def test_registry_wire_survives_abrupt_client_drops(server) -> None:
+    """Handler threads must not take the mock server down when a client aborts
+    mid-request or mid-reply: connect-and-close, send-a-partial-line-and-
+    close, and send-then-close-before-reading all land the reply write on a
+    dead socket. Increment 1 pinned _reply's (AttributeError, OSError) guards
+    in-process; this pins the live server stays healthy for the next request,
+    which still emits exactly one 200 frame afterwards."""
+    import socket
+    import time
+
+    port = int(server.base_url.rsplit(":", 1)[1])
+
+    def one(raw):
+        s = socket.create_connection(("127.0.0.1", port), timeout=5)
+        try:
+            s.sendall(raw)
+            data = b""
+            while True:
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+        finally:
+            s.close()
+        return data
+
+    assert one(b"GET /subjects HTTP/1.0\r\n\r\n").count(b"HTTP/1.0") == 1
+    for _ in range(5):
+        s = socket.create_connection(("127.0.0.1", port), timeout=5)
+        s.sendall(b"GET /subjects/payments-value/versions HTTP/1.0\r\n\r\n")
+        s.close()  # abort before reading the reply
+    for _ in range(5):
+        s = socket.create_connection(("127.0.0.1", port), timeout=5)
+        s.sendall(b"GET /config")
+        s.close()  # partial request line, then close
+    for _ in range(5):
+        s = socket.create_connection(("127.0.0.1", port), timeout=5)
+        s.close()  # connect, send nothing, close
+    time.sleep(0.5)  # let the handler threads finish their dead-socket writes
+    after = one(b"GET /subjects HTTP/1.0\r\n\r\n")
+    assert after.count(b"HTTP/1.0") == 1, after.decode("utf-8", "replace")
+    assert after.startswith(b"HTTP/1.0 200")
+
+
 # ---------------------------------------------------------------------------
 # junk argv / unreadable paths (CLI entry surface)
 # ---------------------------------------------------------------------------
