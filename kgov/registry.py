@@ -60,7 +60,14 @@ class SchemaRegistryClient:
 
     def _get(self, path: str) -> Any:
         url = f"{self.base_url}{path}"
-        req = urllib.request.Request(url, headers=self._headers, method="GET")
+        try:
+            req = urllib.request.Request(url, headers=self._headers, method="GET")
+        except (TypeError, ValueError, AttributeError) as exc:
+            # a junk base_url (an int, bytes, a list, ...) leaks a raw
+            # ValueError ("unknown url type") / TypeError from Request before
+            # any network call; route it through the designed RegistryError
+            # contract like the timeouts
+            raise RegistryError(f"invalid registry url {url!r}: {exc}") from exc
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))

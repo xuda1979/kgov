@@ -429,6 +429,37 @@ def test_validate_message_junk_msg_attrs_no_traceback():
             v.to_dict()  # must not raise
 
 
+def test_validate_message_junk_fields_container_no_traceback():
+    """A direct library caller can hand validate_message a RuleSet whose
+    'fields' is not a mapping (a list, an int, a str, ...) or whose field
+    entries are junk (ints, strings, objects without a 'name'). Those carry no
+    checks — fail closed with zero violations instead of raw-crashing on
+    .values()/.name. A hand-built lookalike missing any FieldCheck attr must
+    also not crash (getattr defaults)."""
+    msg = Message(topic="t", partition=0, offset=0, key=None, value={"f": "x"})
+    for fields in ([], [1], (), "abc", 1, None, {1: 2}):
+        rs = RuleSet(topic="t", fields=fields)
+        assert validate_message(rs, msg) == []
+
+
+def test_validate_message_junk_check_entries_no_traceback():
+    """Junk entries inside rs.fields (a bare int, a str, a hand-built object
+    without the FieldCheck attrs) must be skipped, not crash raw AttributeError
+    on .name / .compiled_pattern. An unhashable raw value (dict/list) against a
+    set/frozenset enum must skip the membership test rather than crash on the
+    hash."""
+    from types import SimpleNamespace
+
+    msg = Message(topic="t", partition=0, offset=0, key=None, value={"f": {}})
+    # junk entries: bare int, str, object without any FieldCheck attrs
+    rs = RuleSet(topic="t", fields={"g": 42, "h": "x", "i": object(),
+                                    "j": SimpleNamespace(name="f")})
+    assert validate_message(rs, msg) == []
+    # a check named 'f' with a set enum and unhashable raw value: no crash
+    rs = RuleSet(topic="t", fields={"f": FieldCheck(name="f", enum={1, "a"})})
+    assert validate_message(rs, msg) == []
+
+
 def test_validate_type_junk_t_no_traceback():
     """_validate_type does 't not in allowed' set membership: unhashable t
     (list/dict/set) raw-crashes — non-string types must raise the designed

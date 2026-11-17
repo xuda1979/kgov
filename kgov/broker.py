@@ -67,6 +67,11 @@ def _decode_value(
     format (if a ``decoder`` is supplied), raw text / hex as a last resort."""
     if raw is None:
         return None
+    if not isinstance(raw, (bytes, bytearray)):
+        # junk payloads (strs, ints, lists, ...) reaching a byte-oriented
+        # decode path would raw-crash on .decode(); hand them back unchanged —
+        # they are already usable as a decoded "value"
+        return raw
     import json
 
     try:
@@ -160,6 +165,13 @@ class _RecordReader:
         from avro import errors as avro_errors
         from avro import io as avro_io
 
+        if not isinstance(payload, (bytes, bytearray)):
+            # junk payloads (None, ints, strs, ...) would raw-crash inside
+            # BytesIO below; fail through the designed ValueError contract so
+            # callers need not import avro internals
+            raise ValueError(
+                f"invalid avro payload: expected bytes, got {type(payload).__name__}"
+            )
         try:
             return avro_io.DatumReader(self._schema).read(
                 avro_io.BinaryDecoder(io.BytesIO(payload))
@@ -169,6 +181,12 @@ class _RecordReader:
             # exceptions (e.g. InvalidAvroBinaryEncoding); raise a designed
             # ValueError so callers need not import avro internals
             raise ValueError(f"invalid avro payload: {exc}") from exc
+        except (AttributeError, TypeError) as exc:
+            # a junk schema object (an int, a plain object without .match,
+            # ...) built by a direct library caller surfaces raw
+            # AttributeError/TypeError from inside avro's DatumReader; fold
+            # that into the same designed ValueError contract
+            raise ValueError(f"invalid avro schema: {exc}") from exc
 
 
 def _default_decoder_factory(reader: "_RecordReader", payload: bytes) -> Any:

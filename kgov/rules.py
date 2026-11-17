@@ -302,62 +302,87 @@ def validate_message(rs: RuleSet, msg: Message) -> list[Violation]:
 
     result: list[Violation] = []
     value = msg.value if isinstance(msg.value, dict) else {}
-    for check in rs.fields.values():
-        present = check.name in (value or {})
-        raw = value.get(check.name) if present else None
+    # a junk fields container (a list, an int, a str, ...) carries no checks —
+    # looking up .values() on it would raw-crash with an AttributeError
+    check_fields = rs.fields if isinstance(rs.fields, dict) else {}
+    for check in check_fields.values():
+        # junk entries (ints, strings, objects without a 'name') cannot name a
+        # field to look up in the message — skip them rather than raw-crash on
+        # .name below; hand-built lookalikes missing any FieldCheck attr are
+        # read via getattr with the same defaults so no attribute access can
+        # raise
+        check_name = getattr(check, "name", None)
+        if check_name is None:
+            continue
+        required = getattr(check, "required", False)
+        non_null = getattr(check, "non_null", False)
+        check_type = getattr(check, "type", None)
+        check_enum = getattr(check, "enum", None)
+        check_range = getattr(check, "range", None)
+        check_pattern = getattr(check, "pattern", None)
+        compiled_pattern = getattr(check, "compiled_pattern", None)
+        present = check_name in (value or {})
+        raw = value.get(check_name) if present else None
 
         # required check
-        if check.required and not present:
+        if required and not present:
             result.append(Violation(
                 rule=rs.name, topic=msg.topic, partition=msg.partition,
-                offset=msg.offset, key=msg.key, field=check.name,
-                check="required", message=f"required field missing: '{check.name}'"))
+                offset=msg.offset, key=msg.key, field=check_name,
+                check="required", message=f"required field missing: '{check_name}'"))
             continue
         if not present:
             continue
 
         # non_null check
-        if check.non_null and raw is None:
+        if non_null and raw is None:
             result.append(Violation(
                 rule=rs.name, topic=msg.topic, partition=msg.partition,
-                offset=msg.offset, key=msg.key, field=check.name,
-                check="non_null", message=f"field '{check.name}' is null but must be non-null"))
+                offset=msg.offset, key=msg.key, field=check_name,
+                check="non_null", message=f"field '{check_name}' is null but must be non-null"))
             continue
 
         # type check
-        if check.type is not None and raw is not None:
-            if not _type_ok(check.type, raw):
+        if check_type is not None and raw is not None:
+            if not _type_ok(check_type, raw):
                 result.append(Violation(
                     rule=rs.name, topic=msg.topic, partition=msg.partition,
-                    offset=msg.offset, key=msg.key, field=check.name,
+                    offset=msg.offset, key=msg.key, field=check_name,
                     check="type", message=(
-                        f"field '{check.name}' has type {_type_repr(raw)} "
-                        f"but rule expects {check.type}")))
+                        f"field '{check_name}' has type {_type_repr(raw)} "
+                        f"but rule expects {check_type}")))
         # enum — junk-typed enum attrs (a bare int, ...) built by a direct
         # library caller bypassing the config loader are not a membership
-        # container; skip the check rather than crash raw `not in`
-        if (check.enum is not None and raw is not None
-                and isinstance(check.enum, (list, tuple, set, frozenset))
-                and raw not in check.enum):
-            result.append(Violation(
-                rule=rs.name, topic=msg.topic, partition=msg.partition,
-                offset=msg.offset, key=msg.key, field=check.name,
-                check="enum", message=(
-                    f"field '{check.name}' value {raw!r} not in allowed enum "
-                    f"{check.enum!r}")))
+        # container; skip the check rather than crash raw `not in`. An
+        # unhashable raw value (a dict, a list, ...) against a set/frozenset
+        # enum would raise raw TypeError from the hash — treat as a miss that
+        # cannot be assessed (skip) rather than crash the scan
+        if (check_enum is not None and raw is not None
+                and isinstance(check_enum, (list, tuple, set, frozenset))):
+            try:
+                not_in_enum = raw not in check_enum
+            except TypeError:
+                not_in_enum = False
+            if not_in_enum:
+                result.append(Violation(
+                    rule=rs.name, topic=msg.topic, partition=msg.partition,
+                    offset=msg.offset, key=msg.key, field=check_name,
+                    check="enum", message=(
+                        f"field '{check_name}' value {raw!r} not in allowed enum "
+                        f"{check_enum!r}")))
         # pattern — junk-typed compiled_pattern attrs (bytes, ints, ...) built
         # by a direct library caller have no .match(); skip the check rather
         # than crash raw AttributeError
-        if check.compiled_pattern is not None and isinstance(raw, str):
-            if not callable(getattr(check.compiled_pattern, "match", None)):
+        if compiled_pattern is not None and isinstance(raw, str):
+            if not callable(getattr(compiled_pattern, "match", None)):
                 pass
-            elif not check.compiled_pattern.match(raw):
+            elif not compiled_pattern.match(raw):
                 result.append(Violation(
                     rule=rs.name, topic=msg.topic, partition=msg.partition,
-                    offset=msg.offset, key=msg.key, field=check.name,
+                    offset=msg.offset, key=msg.key, field=check_name,
                     check="pattern", message=(
-                        f"field '{check.name}' value {raw!r} does not match "
-                        f"pattern /{check.pattern}/")))
+                        f"field '{check_name}' value {raw!r} does not match "
+                        f"pattern /{check_pattern}/")))
         # range
         # Compare raw directly: ``float(raw)`` would overflow on integers
         # beyond the platform double range (OverflowError on e.g. 10**400),
@@ -366,9 +391,9 @@ def validate_message(rs: RuleSet, msg: Message) -> list[Violation]:
         # library caller is not a {bound: threshold} mapping and junk
         # thresholds ("0", {1}) are not numeric — skip those bounds instead
         # of crashing raw on .items() / raw < threshold.
-        if (check.range is not None and isinstance(check.range, dict)
+        if (check_range is not None and isinstance(check_range, dict)
                 and isinstance(raw, (int, float)) and not isinstance(raw, bool)):
-            for bound, threshold in check.range.items():
+            for bound, threshold in check_range.items():
                 if not isinstance(threshold, (int, float)) or isinstance(threshold, bool):
                     continue
                 if bound == "minimum" and raw < threshold:

@@ -45,6 +45,16 @@ FIXTURE = {
 }
 
 
+def test_junk_base_url_raises_designed_registry_error():
+    """A junk base_url (an int, a list, bytes) would leak a raw ValueError
+    ('unknown url type') from urllib Request construction before any network
+    call; it must surface as the designed RegistryError instead."""
+    for bad in (1, [], {}, b"x", None, ["http://x"]):
+        c = SchemaRegistryClient(bad)
+        with pytest.raises(RegistryError):
+            c._get("/subjects")
+
+
 @pytest.fixture
 def server():
     reg = MockRegistry(dict(FIXTURE))

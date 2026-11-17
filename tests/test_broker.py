@@ -53,6 +53,26 @@ def test_decode_value_none():
     assert _decode_value(None) is None
 
 
+def test_decode_value_junk_payloads_passthrough():
+    """A junk payload (str/int/list/... — not bytes) reaching _decode_value
+    must not raw-crash on .decode(): hand it back unchanged as a usable value."""
+    for junk in ("abc", 123, ["a"], {"x": 1}, True, object()):
+        assert _decode_value(junk) == junk
+
+
+def test_record_reader_read_junk_payload_designed_value_error():
+    """Junk/empty payloads must fail through the designed ValueError contract
+    (Fix 32, _RecordReader.read), never leak raw avro/io exceptions. A junk
+    schema object must also fold AttributeError/TypeError into that ValueError
+    rather than leak third-party internals."""
+    from kgov.broker import _RecordReader
+
+    r = _RecordReader(object())
+    for junk in (None, 123, "abc", b"", 1.5):
+        with pytest.raises(ValueError):
+            r.read(junk)
+
+
 def test_broker_message_to_dict_serializable():
     msg = BrokerMessage(
         topic="payments",
