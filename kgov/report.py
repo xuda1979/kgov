@@ -126,7 +126,11 @@ def build_topic_state(
     settings: Optional[StalenessSettings] = None,
 ) -> TopicState:
     """Derive a single topic's governance row from fixture inputs."""
-    settings = settings or StalenessSettings()
+    # a junk settings value (an int, a string, a dict, ...) is not a
+    # StalenessSettings — reading .consumer_grace_seconds below would raw-crash
+    # with AttributeError; fall back to the stock tolerances
+    if not isinstance(settings, StalenessSettings):
+        settings = StalenessSettings()
     now = now or datetime.now(timezone.utc)
     if not isinstance(now, datetime):
         # a junk 'now' argument (an int, bytes, a string, ...) is not a

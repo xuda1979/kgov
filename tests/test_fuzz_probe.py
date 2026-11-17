@@ -396,6 +396,15 @@ def test_report_probes():
                    {"name": "t",
                     "latest_message_at": "2020-01-01T00:00:00Z"},
                    {}, {}, {}, None, g)
+            # a junk settings value (an int, a string, a dict, a list, ...)
+            # must never leak a raw AttributeError from
+            # settings.consumer_grace_seconds — fail closed to the stock
+            # StalenessSettings tolerances
+            _probe(genuine, "report.build_topic_state.junk_settings_obj",
+                   rp.build_topic_state,
+                   {"name": "t",
+                    "latest_message_at": "2020-01-01T00:00:00Z"},
+                   {}, {}, {}, None, j)
         except Exception as exc:  # noqa: BLE001
             # StalenessSettings itself raising is designed only when it is a
             # designed contract type raised from kgov; otherwise it is a
