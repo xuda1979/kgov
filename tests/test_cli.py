@@ -874,6 +874,67 @@ def test_registry_wire_routing_table_single_response(server) -> None:
         )
 
 
+def test_registry_wire_permutation_grid_single_response(server) -> None:
+    """The fixed routing-table pin cannot perturb the dispatch's branch
+    discriminators (segment counts 2/4/5, the schemas/ids int-parse, the
+    per-subject version/config lookup misses, HEAD). Every reachable do_GET
+    branch must still emit exactly one frame: the 404 fall-throughs and the
+    odd shapes exercise the same trailing-reply path the /mode double-reply
+    escaped through, so each is pinned here raw-read to close."""
+    import socket
+
+    port = int(server.base_url.rsplit(":", 1)[1])
+    grid = [
+        # segment-count discriminators: len 2 (no versions word) falls to 404
+        (b"GET /subjects/payments-value HTTP/1.0\r\n\r\n", b"HTTP/1.0 404"),
+        # len 5: extra trailing segment escapes both /versions shapes
+        (b"GET /subjects/payments-value/versions/1/extra HTTP/1.0\r\n\r\n",
+         b"HTTP/1.0 404"),
+        # version lookup miss on a well-formed /versions/{id} path
+        (b"GET /subjects/payments-value/versions/999 HTTP/1.0\r\n\r\n",
+         b"HTTP/1.0 404"),
+        # config lookup miss
+        (b"GET /config/nope HTTP/1.0\r\n\r\n", b"HTTP/1.0 404"),
+        # config accepts any len > 1 (loose subject read) — still one frame
+        (b"GET /config/payments-value/extra HTTP/1.0\r\n\r\n",
+         b"HTTP/1.0 200"),
+        # trailing slash: parts == ['schemas'], no ids keyword → 404
+        (b"GET /schemas/ HTTP/1.0\r\n\r\n", b"HTTP/1.0 404"),
+        # schemas/ids int-parse miss (ValueError caught inside the branch)
+        (b"GET /schemas/ids/nope HTTP/1.0\r\n\r\n", b"HTTP/1.0 404"),
+        # the only get-schema bound branch (id not in backer)
+        (b"GET /schemas/ids/999 HTTP/1.0\r\n\r\n", b"HTTP/1.0 404"),
+        # schemas/ids accepts len >= 3 — trailing extra stays a single 200
+        (b"GET /schemas/ids/2/extra HTTP/1.0\r\n\r\n", b"HTTP/1.0 200"),
+        # mode matches any length; keep the loose shape pinned as design
+        (b"GET /mode/extra HTTP/1.0\r\n\r\n", b"HTTP/1.0 200"),
+        # foreign head with deep parts — single trailing 404
+        (b"GET /foreign/x/y HTTP/1.0\r\n\r\n", b"HTTP/1.0 404"),
+        # HEAD has no do_HEAD override → stdlib 501, still one frame
+        (b"HEAD /subjects HTTP/1.0\r\n\r\n", b"HTTP/1.0 501"),
+    ]
+    for raw, expect in grid:
+        s = socket.create_connection(("127.0.0.1", port), timeout=5)
+        try:
+            s.sendall(raw)
+            data = b""
+            while True:
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+        finally:
+            s.close()
+        assert data.count(b"HTTP/1.0") == 1, (
+            f"path {raw.split()[1].decode()!r} stacked responses: "
+            f"{data.decode('utf-8', 'replace')}"
+        )
+        assert data.startswith(expect), (
+            f"path {raw.split()[1].decode()!r} unexpected status: "
+            f"{data.split(b'\r\n')[0].decode()!r}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # junk argv / unreadable paths (CLI entry surface)
 # ---------------------------------------------------------------------------
