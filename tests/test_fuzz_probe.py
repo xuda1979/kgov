@@ -291,6 +291,21 @@ def test_registry_probes():
         ct = SchemaRegistryClient("http://127.0.0.1:1", token=t, timeout=0.1)
         _probe(genuine, "registry.list_subjects.junk_token", ct.list_subjects)
         _probe(genuine, "registry._get.junk_token", ct._get, "/subjects")
+    # __init__ normalization (str(base_url).rstrip("/")) must never crash on
+    # junk base_url/token/timeout shapes at construction time.
+    for b in JUICE:
+        for t in JUICE:
+            _probe(genuine, "registry.SchemaRegistryClient.init",
+                   SchemaRegistryClient, b, t, None)
+    # _compatibility_level wraps the /config fetch in try/RegistryError -> None,
+    # so every junk subject/base_url/timeout must yield None or the designed
+    # RegistryError, never a raw crash.
+    for b in (None, 1, [], {}, b"x", "", set(), float("inf"), 0, 3.14):
+        for t in (None, 1, "x", 0, -1.0, float("inf"), float("nan"), 1e300):
+            c = SchemaRegistryClient(b, timeout=t)
+            for s in JUICE:
+                _probe(genuine, "registry._compatibility_level.junk",
+                       c._compatibility_level, s)
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 
@@ -509,6 +524,19 @@ def test_broker_probes():
         _probe(genuine, "broker.consumer_groups.junk", bk.consumer_groups, j, j)
         _probe(genuine, "broker.read_topic.junk",
                lambda j=j: bk.read_topic(j, j, group_id=j, n=j, timeout=j))
+    # _require_kafka: the import succeeds in this venv (clean no-op), and the
+    # NeedsBrokerError arm is pinned in test_broker.py; probing keeps both in
+    # the battery so a future import-rename cannot go unpinned.
+    _probe(genuine, "broker._require_kafka", bk._require_kafka)
+    # _probe_bootstrap: read_topic's connectivity probe.  Under the (j, j) junk
+    # shape every pair trips the pure-Python gates (_require_bootstrap and the
+    # _require_timeout added for the int(timeout*1000) OverflowError class)
+    # before any AdminClient import — the fail-closed contract is what the
+    # battery checks.  The reachable/unreachable arms with a stubbed AdminClient
+    # are pinned in test_broker.py where a monkeypatch fixture is natural.
+    for j in JUICE:
+        _probe(genuine, "broker._probe_bootstrap.junk",
+               bk._probe_bootstrap, j, j)
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 

@@ -427,6 +427,7 @@ def _probe_bootstrap(bootstrap: str, timeout: float) -> None:
     messages and a ``check`` gate would pass vacuously.
     """
     _require_bootstrap(bootstrap)
+    _require_timeout(timeout)
     from confluent_kafka.admin import AdminClient
 
     admin = AdminClient(

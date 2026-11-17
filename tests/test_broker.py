@@ -366,6 +366,15 @@ def test_probe_bootstrap_junk_raises():
         _probe_bootstrap(42, 1.0)
 
 
+@pytest.mark.parametrize("timeout", ["abc", None, 0, -1, True, float("nan"), float("inf")])
+def test_probe_bootstrap_junk_timeout_raises(timeout):
+    """Junk timeouts must fail at the gate, never leak int() OverflowError."""
+    from kgov.broker import _probe_bootstrap
+
+    with pytest.raises(ValueError, match="timeout"):
+        _probe_bootstrap("127.0.0.1:9092", timeout)
+
+
 # ---------------------------------------------------------------------------
 # Connectivity probe
 # ---------------------------------------------------------------------------
