@@ -513,6 +513,24 @@ def test_mock_registry_probes():
         m2.add_subject("s", {"id": 1, "version": 1, "compatibility": compat})
         _probe(genuine, "mr.compatibility_level.junk_compat",
                m2.compatibility_level, "s")
+    # list_subjects with mixed-type subject keys in the fixture (sorted()
+    # over str/bool/int/float/bytes keys must not raise)
+    mixed_seeds = [
+        {"subjects": {1: [], "a": []}},
+        {"subjects": {b"b": [], "a": []}},
+        {"subjects": {3.14: [], 1: []}},
+        {"subjects": {True: [], 1: []}},
+        {"subjects": {None: []}},
+        {"subjects": "junk"},
+        {"subjects": {}},
+        {"subjects": None},
+        "junk",
+        1,
+        [1, 2],
+    ]
+    for seed in mixed_seeds:
+        mk3 = mr.MockRegistry(fixture=seed)
+        _probe(genuine, "mr.list_subjects.mixed_keys", mk3.list_subjects)
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 
@@ -577,5 +595,18 @@ def test_cli_internals_probes(tmp_path, monkeypatch):
         ns = type("A", (), {"format": j, "type": "report"})()
         _probe(genuine, "cli._require_export_format",
                c._require_export_format, ns, {"json", "csv"})
+        argv_chars = ["check", "--config", j, "--broker", j, "--topic", j]
+        argv_chars = [a for a in argv_chars if isinstance(a, str)]
+        _probe(genuine, "cli.main.junk_argv", c.main, argv_chars)
+        _probe(genuine, "cli.main.junk_argv_single", c.main, [j])
+    # main() must fail closed on junk argv shapes (designed usage error → 2 or
+    # SystemExit, never a raw escape); notes: argparse exits via SystemExit so
+    # _probe() records only genuinely-escaped exceptions
+    _probe(genuine, "cli.main.build_parser_argv", c.main, ["--version"])
+    # junk non-list argv, mixed junk types, unknown command
+    _probe(genuine, "cli.main.junk_nonlist", c.main, None)
+    _probe(genuine, "cli.main.junk_nonlist2", c.main, 3.14)
+    _probe(genuine, "cli.main.mixed_junk", c.main, [1, b"x", [], {}])
+    _probe(genuine, "cli.main.unknown_cmd", c.main, ["bogus-cmd"])
     _probe(genuine, "cli.build_parser", c.build_parser)
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
