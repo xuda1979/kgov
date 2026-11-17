@@ -1023,3 +1023,48 @@ def test_load_schema_text_tolerates_junk_refs_fail_closed():
     text, fmt = _load_schema_text(str(before), "avro")
     assert json.loads(text)
     assert fmt == "avro"
+
+
+def _run_module(*argv: str) -> int:
+    """Run the real process entry (`python -m kgov.cli`, the same code path
+    the installed `kgov` console script executes: sys.exit(main()) at the
+    bottom of cli.py) and return its process exit code. The in-process main()
+    tests above never cross the sys.exit boundary, so this subprocess pin is
+    the only assertion of the exit-code contract as a real process sees it."""
+    import subprocess
+    import sys
+
+    proc = subprocess.run(
+        [sys.executable, "-m", "kgov.cli", *argv],
+        capture_output=True,
+        text=True,
+        cwd=Path(__file__).parent.parent,
+        timeout=60,
+    )
+    return proc.returncode
+
+
+def test_module_entry_exit_code_contract():
+    """The process boundary (cli.py `sys.exit(main())`) must surface the same
+    exit-code contract the in-process tests assert: usage problems -> 2,
+    success -> 0, breaking schema diff / violated gate -> 1, missing input
+    file -> 3. No raw Traceback may escape into stderr on any of these."""
+
+    # no subcommand / unknown subcommand -> argparse usage error (2)
+    assert _run_module() == 2
+    assert _run_module("bogus-cmd") == 2
+    # --help is a usage success -> 0
+    assert _run_module("--help") == 0
+
+    # missing rules file -> clean runtime error (3), not a raw OSError
+    rc = _run_module("check", "--config", "/no/rules.yaml",
+                     "--messages", "x.json")
+    assert rc == 3
+
+    # breaking schema diff -> gate fail (1); success/no diff contact -> 0
+    before = str(FIXTURES / "schemas" / "breaking_before.json")
+    after = str(FIXTURES / "schemas" / "breaking_after.json")
+    assert _run_module("schema-diff", "--before", before, "--after", after) == 1
+    v1 = str(FIXTURES / "schemas" / "v1.json")
+    v2 = str(FIXTURES / "schemas" / "v2.json")
+    assert _run_module("schema-diff", "--before", v1, "--after", v2) == 0
