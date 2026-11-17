@@ -165,6 +165,76 @@ def test_schema_diff_probes():
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 
+def test_schema_diff_internals_probes():
+    """Internal helpers (never directly fuzzed by the top-level battery) must
+    fail closed on junk: _printable/_desc/_name_of/_is_nullable/_type_names/
+    _types_assignable/_join/_types_assignable_set/_js_*/parse_schema_text, and
+    the _avro_diff/_js_diff walkers fed pathological-but-structured records
+    (junk union members, dict-size fixed, nested record maps/arrays, NaN
+    bounds, junk enums/required lists)."""
+    import kgov.schema_diff as sd
+
+    genuine = {}
+    for j in JUICE:
+        _probe(genuine, "sd._printable", sd._printable, j)
+        _probe(genuine, "sd._desc", sd._desc, j)
+        _probe(genuine, "sd._name_of", sd._name_of, j)
+        _probe(genuine, "sd._type_names", sd._type_names, j)
+        _probe(genuine, "sd._types_assignable", sd._types_assignable, j, j)
+        _probe(genuine, "sd._is_nullable", sd._is_nullable, j)
+        _probe(genuine, "sd._join", sd._join, j, "child")
+        _probe(genuine, "sd._join.p", sd._join, "parent", j)
+        _probe(genuine, "sd._types_assignable_set", sd._types_assignable_set, j, j)
+        _probe(genuine, "sd._js_string_types", sd._js_string_types, j)
+        _probe(genuine, "sd._js_scalar_rank", sd._js_scalar_rank, j)
+        _probe(genuine, "sd._js_strings_assignable", sd._js_strings_assignable, j, j)
+        _probe(genuine, "sd.parse_schema_text", sd.parse_schema_text, j, "avro")
+        _probe(genuine, "sd.parse_schema_text.fmt", sd.parse_schema_text, "{}", j)
+    # _avro_diff with pathological-but-structurally-valid records
+    fld_union = [{"name": "u", "type": ["null", {"type": "record",
+                 "name": "R2", "fields": [{"name": "x", "type": "int"}]}]}]
+    junk_records = [
+        {"type": "record", "name": "R",
+         "fields": [{"name": "a", "type": [None, {}, [], "null", {"x": 1},
+                    {"type": "record", "name": "N", "fields": [
+                        {"name": "n", "type": {"type": "enum",
+                         "name": "E", "symbols": [1, None, {}, "A"]}}]}]}]},
+        {"type": "record", "name": "R", "fields": [{"name": "f",
+         "type": {"type": "fixed", "name": "F", "size": {"x": 1}}}]},
+        {"type": "record", "name": "R", "fields": [{"name": "m",
+         "type": {"type": "map", "values": {"type": "record", "name": "M",
+         "fields": []}}}], "order": "ignored"},
+        {"type": "record", "name": "R", "fields": [
+            {"name": "ar", "type": {"type": "array",
+             "items": {"type": "record", "name": "A",
+                       "fields": [{"name": "b", "type": "long"}]}}}]},
+    ]
+    for ra in junk_records:
+        _probe(genuine, "sd._avro_diff.junkR", sd._avro_diff, ra, ra, "", [])
+    _probe(genuine, "sd._avro_diff.union", sd._avro_diff,
+           {"type": "record", "name": "R", "fields": fld_union},
+           {"type": "record", "name": "R", "fields": list(reversed(fld_union))},
+           "", [])
+    for j in JUICE:
+        _probe(genuine, "sd._avro_diff.junk", sd._avro_diff, j, j, "", [])
+        _probe(genuine, "sd._js_diff.junk", sd._js_diff, j, j, "", [])
+    # _js_diff with numeric NaN/inf bounds + junk enum/props
+    js_recs = [
+        ({"type": "object", "properties": {"p": {"type": "number",
+           "minimum": float("nan"), "maximum": float("inf")}}},
+         {"type": "object", "properties": {"p": {"type": "number",
+           "minimum": 1, "maximum": 2}}}),
+        ({"type": "object", "enum": [b"x", {1: 2}]},
+         {"type": "object", "enum": [b"x"]}),
+        ({"type": "array", "items": {"type": "object",
+           "required": [1, None, "a"]}},
+         {"type": "array", "items": {"type": "object", "required": []}}),
+    ]
+    for a, b in js_recs:
+        _probe(genuine, "sd._js_diff.recs", sd._js_diff, a, b, "", [])
+    assert genuine == {}, f"genuine crashes escaped: {genuine}"
+
+
 # ---------------------------------------------------------------------------
 # registry
 # ---------------------------------------------------------------------------
