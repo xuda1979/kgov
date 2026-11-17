@@ -710,6 +710,44 @@ def test_cmd_check_junk_broker_topic_raises_clierror():
                          output=None))
 
 
+def test_cmd_check_broker_scan_junk_msgs_fail_closed(monkeypatch):
+    """A read_topic wire/double returning junk msgs topology (non-list
+    containers, non-message entries) must raise a clean CliError — never a
+    raw TypeError/AttributeError from `for m in msgs` / `m.topic`, and never
+    a gate that passes vacuously on a junk read."""
+    import argparse
+
+    from kgov.broker import BrokerMessage
+    from kgov.cli import CliError, cmd_check
+
+    rules = str(FIXTURES / "rules" / "rules_scale.yaml")
+
+    def ns(**kw):
+        return argparse.Namespace(**kw)
+
+    calls = {}
+
+    def junk_read(bootstrap, topic, value_decoder=None, **kw):
+        return calls["return"]
+
+    monkeypatch.setattr("kgov.broker.read_topic", junk_read)
+
+    for junk in (None, 42, "msg", {"a": 1}, [None], [42],
+                 [{"topic": "t", "partition": 0, "offset": 1}], [object()]):
+        calls["return"] = junk
+        with pytest.raises(CliError, match="invalid messages"):
+            cmd_check(ns(config=rules, messages=None, broker="127.0.0.1:9092",
+                         topic="t", max_violations=None, schema_registry=None,
+                         output=None))
+
+    # a valid BrokerMessage list still checks normally (fence, not broken)
+    calls["return"] = [BrokerMessage(topic="t", partition=0, offset=1,
+                                     key=None, value={"amount_cents": 100})]
+    assert cmd_check(ns(config=rules, messages=None, broker="127.0.0.1:9092",
+                        topic="t", max_violations=None, schema_registry=None,
+                        output=None)) == 0
+
+
 def test_cmd_check_junk_max_violations_fails_closed():
     """A junk max_violations value must not participate in the numeric gate
     comparison; a library caller passing junk gets a fail-closed gate

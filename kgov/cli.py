@@ -244,20 +244,28 @@ def _validate(rs, messages_path: Optional[str], broker_url: Optional[str], topic
             # surface as a clean runtime error instead of a raw traceback and
             # never let an empty read pass the gate silently.
             raise CliError(f"broker scan failed: {exc}") from exc
-        return [
-            v
-            for m in msgs
-            for v in validate_message(
-                rs,
-                Message(
-                    topic=m.topic,
-                    partition=m.partition,
-                    offset=m.offset,
-                    key=m.key,
-                    value=m.value,
-                ),
-            )
-        ]
+        try:
+            return [
+                v
+                for m in msgs
+                for v in validate_message(
+                    rs,
+                    Message(
+                        topic=m.topic,
+                        partition=m.partition,
+                        offset=m.offset,
+                        key=m.key,
+                        value=m.value,
+                    ),
+                )
+            ]
+        except (TypeError, AttributeError) as exc:
+            # The contract is read_topic() -> list[BrokerMessage]. A broken
+            # wire or test-double handing back non-list containers or
+            # non-message entries would otherwise traceback raw here (and a
+            # None/empty junk read must never pass the gate vacuously) — fail
+            # closed with a clean error instead.
+            raise CliError(f"broker scan returned invalid messages: {exc}") from exc
     return None
 
 
