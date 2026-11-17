@@ -88,12 +88,17 @@ class RegistryHandler(BaseHTTPRequestHandler):
             # fire before any wfile io; fall back to a serializable envelope
             # so the handler thread never dies mid-response
             body = json.dumps(str(payload)).encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Length", str(len(body)))
-        for k, v in _JSON_HEADERS.items():
-            self.send_header(k, v)
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Length", str(len(body)))
+            for k, v in _JSON_HEADERS.items():
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(body)
+        except (AttributeError, OSError):
+            # a handler without a real wfile (direct call / test double) or a
+            # dropped client socket must not take the handler thread down
+            return
 
     def _error(self, code: int, message: str, error_code: int = 40401) -> None:
         self._reply(code, {"error_code": error_code, "message": message})
@@ -102,7 +107,8 @@ class RegistryHandler(BaseHTTPRequestHandler):
         # only a string request line can be parsed as a URL; junk values
         # (ints, lists, dicts, ...) would raw-crash urlparse, and a missing
         # path attribute means "no path" — both must not take the handler down
-        path = self.path if isinstance(self.path, str) else ""
+        path = getattr(self, "path", None)
+        path = path if isinstance(path, str) else ""
         path = unquote(urlparse(path).path)
         return [p for p in path.split("/") if p]
 

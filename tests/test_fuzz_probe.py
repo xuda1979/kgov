@@ -603,6 +603,26 @@ def test_mock_registry_probes():
     m_ex = mr.MockRegistry()
     _probe(genuine, "mr.__exit__.unstarted", m_ex.__exit__, None, None, None)
     _probe(genuine, "mr.__exit__.junk", m_ex.__exit__, 1, "x", [])
+    # RegistryHandler internals: a handler instance created without the
+    # socket-server __init__ (object.__new__) has no path/wfile/registry;
+    # every routing entry must fail closed instead of raw-crashing. The
+    # instance is a REAL RegistryHandler so class methods (_path_parts,
+    # _reply, ...) still resolve; only the attributes are missing.
+    no_attrs = object.__new__(mr.RegistryHandler)
+    for meth in ("_path_parts", "do_GET", "do_POST", "do_PUT", "do_DELETE"):
+        _probe(genuine, "mr.handler.noattrs", getattr(mr.RegistryHandler, meth),
+               no_attrs)
+    _probe(genuine, "mr.handler._error", mr.RegistryHandler._error,
+           no_attrs, 404, "boom")
+    for bad_path in JUICE:
+        h = object.__new__(mr.RegistryHandler)
+        h.path = bad_path
+        _probe(genuine, "mr.handler.junk_path", mr.RegistryHandler.do_GET, h)
+    # _reply against a bare object (no send_response/wfile at all): the
+    # guarded response sequence must swallow AttributeError/OSError.
+    for payload in (object(), {1, 2}, b"bytez", {"k": b"v"}, 3.14, None):
+        _probe(genuine, "mr.handler.junk_wfile", mr.RegistryHandler._reply,
+               object(), 200, payload)
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 
