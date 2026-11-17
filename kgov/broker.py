@@ -157,11 +157,18 @@ class _RecordReader:
     def read(self, payload: bytes) -> Any:
         import io
 
+        from avro import errors as avro_errors
         from avro import io as avro_io
 
-        return avro_io.DatumReader(self._schema).read(
-            avro_io.BinaryDecoder(io.BytesIO(payload))
-        )
+        try:
+            return avro_io.DatumReader(self._schema).read(
+                avro_io.BinaryDecoder(io.BytesIO(payload))
+            )
+        except avro_errors.AvroException as exc:
+            # a malformed/empty/junk payload surfaces third-party avro
+            # exceptions (e.g. InvalidAvroBinaryEncoding); raise a designed
+            # ValueError so callers need not import avro internals
+            raise ValueError(f"invalid avro payload: {exc}") from exc
 
 
 def _default_decoder_factory(reader: "_RecordReader", payload: bytes) -> Any:

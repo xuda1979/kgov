@@ -169,6 +169,31 @@ def test_avro_decoder_malformed_datum(registry_server):
     assert decoder(trash) is _UNDECODED
 
 
+def test_record_reader_read_junk_payloads_designed_value_error():
+    """A direct _RecordReader.read call with an empty/truncated/junk payload
+    must raise a designed ValueError, not a third-party avro exception
+    traceback (InvalidAvroBinaryEncoding). A valid datum still decodes."""
+    import io
+
+    from avro import io as avro_io
+    from avro import schema as avro_schema
+
+    from kgov.broker import _RecordReader
+
+    parsed = avro_schema.parse(json.dumps(_PAYMENT_SCHEMA))
+    reader = _RecordReader(parsed)
+    for junk in (None, b"", b"\xff\x01\x02", b"\xff\xff\xff\xff\xff"):
+        with pytest.raises(ValueError, match="invalid avro payload"):
+            reader.read(junk)
+    buf = io.BytesIO()
+    writer = avro_io.DatumWriter(parsed)
+    writer.write(
+        {"payment_id": "pay_001", "currency": "USD"},
+        avro_io.BinaryEncoder(buf),
+    )
+    assert reader.read(buf.getvalue()) == {"payment_id": "pay_001", "currency": "USD"}
+
+
 def test_decode_value_json_preferred_over_avro():
     """Valid JSON bytes are decoded as JSON; the Avro decoder is never asked."""
     from kgov.broker import _UNDECODED, _decode_value
