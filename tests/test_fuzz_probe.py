@@ -479,6 +479,11 @@ def test_broker_probes():
         SchemaRegistryClient("http://127.0.0.1:1", timeout=0.1))
     for j in JUICE:
         _probe(genuine, "broker._reader_for.junk_id", dec_r._reader_for, j)
+    # _RecordReader.__init__ only stores its schema (no parsing), so any junk
+    # schema must construct cleanly; _now_ms is a pure monotonic-ish clock.
+    for j in JUICE:
+        _probe(genuine, "broker._RecordReader.init", bk._RecordReader, j)
+    _probe(genuine, "broker._now_ms", bk._now_ms)
     # _default_decoder_factory with a junk reader must fail through the
     # designed ValueError, never leak the raw AttributeError from .read; the
     # public __call__ path already swallows factory exceptions to _UNDECODED.
@@ -618,6 +623,10 @@ def test_mock_registry_probes():
         h = object.__new__(mr.RegistryHandler)
         h.path = bad_path
         _probe(genuine, "mr.handler.junk_path", mr.RegistryHandler.do_GET, h)
+        _probe(genuine, "mr.handler.junk_path_parts",
+               mr.RegistryHandler._path_parts, h)
+        _probe(genuine, "mr.handler.junk_subject_from_path",
+               mr.RegistryHandler._subject_from_path, h)
     # _reply against a bare object (no send_response/wfile at all): the
     # guarded response sequence must swallow AttributeError/OSError.
     for payload in (object(), {1, 2}, b"bytez", {"k": b"v"}, 3.14, None):
