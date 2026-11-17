@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -109,7 +109,12 @@ class TopicState:
     violation_count: int = 0
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        # Build straight from declared fields instead of asdict(): asdict()
+        # deep-copies every value, and un-picklable leaves (memoryview, ...)
+        # raise raw TypeError from copy.deepcopy. Reading fields directly keeps
+        # junk leaves as-is so callers (CSV, JSON) can apply their own
+        # coercion, matching to_json's junk tolerance.
+        return {f.name: getattr(self, f.name) for f in fields(self)}
 
 
 def build_topic_state(
@@ -357,8 +362,28 @@ def report_to_csv(report: GovernanceReport) -> str:
     ]
     writer = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
     writer.writeheader()
-    for t in report.topics:
+    # a junk report argument (an int, a string, None, ..., or an object
+    # without a 'topics' attribute) carries no rows — fail closed to a
+    # header-only CSV rather than raw-crashing on attribute access
+    rows = getattr(report, "topics", None)
+    if not isinstance(rows, (list, tuple)):
+        return buf.getvalue()
+    # only TopicState rows describe a topic; junk entries (ints, dicts,
+    # objects, a hand-built lookalike without to_dict, ...) would raw-crash
+    # on .to_dict() below and are meaningless as rows — skip them like
+    # GovernanceReport.to_dict does
+    for t in rows:
+        if not isinstance(t, TopicState):
+            continue
         row = t.to_dict()
-        row["tags"] = "|".join(t.tags)
+        # only a list of strings forms a valid '|'-joined tag cell; any other
+        # shape (None, a bare str, bytes, numbers, lists with non-str
+        # elements, ...) would make "|".join raise a raw TypeError
+        raw_tags = row.get("tags")
+        if isinstance(raw_tags, list):
+            tags = [tag for tag in raw_tags if isinstance(tag, str)]
+            row["tags"] = "|".join(tags)
+        else:
+            row["tags"] = ""
         writer.writerow(row)
     return buf.getvalue()

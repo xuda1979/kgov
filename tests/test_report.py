@@ -600,3 +600,89 @@ def test_inf_partitions_and_replication_fall_back_to_defaults():
     )
     assert rep.topics[0].partitions == 1
     assert rep.topics[0].replication_factor == 1
+
+
+def test_report_to_csv_tolerates_junk_report_arg():
+    """A junk report argument to report_to_csv (None, an int, a string, a
+    list, a dict, an object without 'topics', garbage bytes) carries no rows —
+    it must fail closed to a header-only CSV, not raw-crash on attribute
+    access. A valid report still exports normally."""
+    header = "name,owner,tags"
+    for bad in (None, 42, 2.5, "x", b"x", [1], {"a": 1}, (1, 2), set(), object()):
+        out = report_to_csv(bad)
+        assert isinstance(out, str)
+        assert "name,owner,tags" in out  # header written, no crash
+    # a topics container that is not a list/tuple (a dict, None on a
+    # lookalike) is also junk — header-only
+    for container in ({"a": TopicState(name="t")}, None):
+        lookalike = type("Lookalike", (), {"topics": container})()
+        out = report_to_csv(lookalike)
+        assert "name,owner,tags" in out
+    # valid path unchanged
+    rep = GovernanceReport(topics=[TopicState(name="payments", tags=["core"])])
+    out = report_to_csv(rep)
+    rows = list(csv.DictReader(io.StringIO(out)))
+    assert rows[0]["name"] == "payments"
+    assert rows[0]["tags"] == "core"
+
+
+def test_report_to_csv_tolerates_junk_topics_entries():
+    """Junk entries in GovernanceReport.topics (ints, None, lists, dicts,
+    objects, hand-built lookalikes without to_dict) are not TopicState rows —
+    report_to_csv must skip them instead of raw-crashing on .to_dict(). A
+    valid row next to junk still exports."""
+    for entry in (42, None, 2.5, "x", b"x", [1], {"a": 1}, (1, 2), set(), object()):
+        out = report_to_csv(GovernanceReport(topics=[entry]))
+        assert "name,owner,tags" in out  # header-only, no crash
+    # no to_dict attribute at all
+    class NoDict:
+        tags = ["a"]
+    out = report_to_csv(GovernanceReport(topics=[NoDict()]))
+    assert "name,owner,tags" in out
+    # a valid row mixed with junk still exports
+    rep = GovernanceReport(topics=[TopicState(name="ok"), 42, None, object()])
+    rows = list(csv.DictReader(io.StringIO(report_to_csv(rep))))
+    assert len(rows) == 1
+    assert rows[0]["name"] == "ok"
+
+
+def test_report_to_csv_tolerates_junk_tags_values():
+    """Junk tags values on a hand-built TopicState (non-list, non-str list
+    elements, bytes, None, nested lists) must not crash the '|'-join —
+    the tag cell falls back to '' (or the str-only joins) instead of raising
+    a raw TypeError. Valid string tags still join unchanged."""
+    for tags in (None, 42, 2.5, "x", b"x", {"a": 1}, [1], (1, 2), {1, 2},
+                 [b"x"], [None], ["ok", b"y"], ["ok", None], [1, "a"],
+                 [["x"]], [{"a": 1}], bytearray(b"x"), memoryview(b"ab")):
+        out = report_to_csv(GovernanceReport(topics=[TopicState(name="t", tags=tags)]))
+        assert "name,owner,tags" in out  # never raises
+    # valid tags still join with '|'
+    rep = GovernanceReport(topics=[TopicState(name="t", tags=["core", "critical"])])
+    rows = list(csv.DictReader(io.StringIO(report_to_csv(rep))))
+    assert rows[0]["tags"] == "core|critical"
+
+
+def test_report_to_csv_tolerates_unpicklable_topic_fields():
+    """TopicState.to_dict must not deep-copy values (asdict() did) — a
+    memoryview tags value is un-picklable and would raise raw TypeError from
+    copy.deepcopy mid-export; to_dict/export must keep going."""
+    ts = TopicState(name="t", tags=[memoryview(b"ab")])
+    d = ts.to_dict()  # must not raise on deepcopy
+    assert "tags" in d
+    out = report_to_csv(GovernanceReport(topics=[ts]))
+    assert "name,owner,tags" in out
+
+
+def test_model_diff_report_generated_at_junk_export_safe():
+    """A GovernanceReport built by hand whose topics are real TopicState rows
+    still exports to CSV with stale/violation fields numeric, and the
+    to_dict/to_json path stays JSON-safe (bytes owner falls back via the
+    is-string guard only at build time; hand-built junk values stay stringy)."""
+    rep = GovernanceReport(
+        total_topics=1,
+        topics=[TopicState(name="t", tags=["a"], violation_count=2)],
+    )
+    rows = list(csv.DictReader(io.StringIO(report_to_csv(rep))))
+    assert rows[0]["violation_count"] == "2"
+    assert rows[0]["tags"] == "a"
+    json.loads(rep.to_json())
