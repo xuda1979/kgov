@@ -423,6 +423,26 @@ def test_classify_priority():
     assert classify([{"kind": CompatibilityKind.NON_BREAKING, "path": "a", "message": "x"}]) == CompatibilityKind.NON_BREAKING
 
 
+def test_classify_tolerates_junk_results():
+    """classify() is a public helper; a broken library caller or test double
+    could hand it junk. Non-list containers crash the iteration and non-dict
+    entries .get(), so both must fail closed to Non-Breaking. Junk kinds must
+    be ignored (string-guarded) but valid entries still classified — a real
+    Breaking among junk still reports Breaking, never passes vacuously."""
+    C = CompatibilityKind
+    assert classify(None) == C.NON_BREAKING
+    assert classify(42) == C.NON_BREAKING
+    assert classify("x") == C.NON_BREAKING
+    assert classify({"a": 1}) == C.NON_BREAKING
+    assert classify(iter([C.BREAKING])) == C.NON_BREAKING
+    assert classify([None, 1, "x", b"y", [1, 2], set()]) == C.NON_BREAKING
+    assert classify([{"kind": {1, 2}}, {"kind": 42}, {"kind": b"x"}]) == C.NON_BREAKING
+    assert classify([{"kind": C.ADDITIVE}, {"kind": C.BREAKING}, None, 42]) == C.BREAKING
+    assert classify([{"kind": C.ADDITIVE}, "junk"]) == C.ADDITIVE
+    assert classify([{"kind": C.NON_BREAKING}, [1, 2]]) == C.NON_BREAKING
+    assert classify([{"kind": C.NON_BREAKING}, {"kind": C.BREAKING}]) == C.BREAKING
+
+
 def test_evolution_fixture_series(avro_series, json_series):
     """Validate the schema-evolution fixture series classifies as intended."""
     expected = {

@@ -625,9 +625,28 @@ def diff_avro(
 
 
 def classify(results: list) -> str:
-    if any(r.get("kind") == CompatibilityKind.BREAKING for r in results):
+    # Junk results (non-list containers, non-dict entries, non-string kinds)
+    # would traceback raw on the iteration or .get() below. A broken library
+    # caller or test double must not crash the summary helper: skip non-dict
+    # entries and non-string kinds, and treat a non-list container exactly like
+    # an empty one (NON_BREAKING) — consistent with to_markdown()'s tolerance.
+    if not isinstance(results, list):
+        return CompatibilityKind.NON_BREAKING
+    breaking = False
+    additive = False
+    for r in results:
+        if not isinstance(r, dict):
+            continue
+        kind = r.get("kind")
+        if not isinstance(kind, str):
+            continue
+        if kind == CompatibilityKind.BREAKING:
+            breaking = True
+        elif kind == CompatibilityKind.ADDITIVE:
+            additive = True
+    if breaking:
         return CompatibilityKind.BREAKING
-    if any(r.get("kind") == CompatibilityKind.ADDITIVE for r in results):
+    if additive:
         return CompatibilityKind.ADDITIVE
     return CompatibilityKind.NON_BREAKING
 
