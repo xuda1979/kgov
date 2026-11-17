@@ -302,6 +302,12 @@ def test_rules_probes():
         _probe(genuine, "rules.Message.to_dict",
                rl.Message(topic="t", partition=j, offset=j, key=j,
                           value=j).to_dict)
+        _probe(genuine, "rules.build_ruleset.junk",
+               rl.build_ruleset, j)
+        _probe(genuine, "rules.build_ruleset.junk_rules",
+               rl.build_ruleset, {"version": 1, "rules": j})
+        _probe(genuine, "rules.load_rules_yaml.junk",
+               rl.load_rules_yaml, j)
         rs = RC(topic=j, name=j, fields=j)
         msg = MC(topic=j, partition=j, offset=j, key=j, value=j)
         _probe(genuine, "rules.validate_message.junk_rs_msg",

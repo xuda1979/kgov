@@ -143,6 +143,17 @@ def test_non_numeric_range_bounds_rejected(bound):
                                         "range": {"minimum": bound}}}})
 
 
+@pytest.mark.parametrize("rules", [5, None, 3.14, True, "abc", {"x": 1}])
+def test_build_ruleset_junk_rules_value_fails_closed(rules):
+    """A non-list 'rules' value (int, None, float, bool, str, dict) must
+    raise a clean RulesConfigError, not a raw TypeError from iterating it.
+    A valid list of rule mappings still builds."""
+    with pytest.raises(RulesConfigError, match="'rules' must be a list"):
+        build_ruleset({"version": 1, "rules": rules})
+    rs = build_ruleset({"version": 1, "rules": [{"fields": {"a": {"type": "int"}}}]})
+    assert "a" in rs.fields
+
+
 def test_validate_clean_message():
     rs = _rs()
     msg = Message(

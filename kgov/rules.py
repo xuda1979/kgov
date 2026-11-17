@@ -131,7 +131,13 @@ def build_ruleset(data: Any) -> RuleSet:
     if "name" in data:
         rs.name = str(data["name"])
     if "rules" in data:
-        for r in data["rules"]:
+        rules = data["rules"]
+        if not isinstance(rules, list):
+            # junk non-iterable values (ints, None, floats, bools, ...) would
+            # raw-crash the iteration below with a bare TypeError; fail closed
+            # with a clean typed error instead
+            raise RulesConfigError("'rules' must be a list of rule mappings")
+        for r in rules:
             _merge_rule(rs, r)
     elif "fields" in data:
         _merge_fields(rs, data["fields"], rule_name=rs.name)
