@@ -433,6 +433,16 @@ def test_report_probes():
                 genuine.setdefault(
                     (type(exc).__name__, fname.split("/")[-1]),
                     []).append("report.StalenessSettings")
+        # _to_int (nested in build_topic_state) funnels partitions/
+        # replication_factor through int() and catches TypeError/ValueError/
+        # OverflowError → default; junk numeric shapes (None via missing key,
+        # floats, inf/nan, bytes, lists, dicts, objects, bools, "1", ...) must
+        # all land on the default without leaking a raw exception.
+        for j in JUICE:
+            _probe(genuine, "report.build_topic_state.junk_partitions",
+                   rp.build_topic_state,
+                   {"name": "t", "partitions": j, "replication_factor": j},
+                   {}, {}, {}, None)
         _probe(genuine, "report.build_governance_report.junk",
                rp.build_governance_report, j)
         _probe(genuine, "report.report_to_csv.junk", rp.report_to_csv, j)
@@ -647,6 +657,10 @@ def test_mock_registry_probes():
                no_attrs)
     _probe(genuine, "mr.handler._error", mr.RegistryHandler._error,
            no_attrs, 404, "boom")
+    # log_message is a deliberate no-op (keeps the test output quiet); probing
+    # it pins that it never raises regardless of fmt/args shapes.
+    _probe(genuine, "mr.handler.log_message", mr.RegistryHandler.log_message,
+           no_attrs, "GET %s -> %s", "/subjects", 200)
     for bad_path in JUICE:
         h = object.__new__(mr.RegistryHandler)
         h.path = bad_path
