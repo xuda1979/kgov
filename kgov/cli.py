@@ -402,7 +402,10 @@ def cmd_registry(args) -> int:
         except Exception as exc:
             raise CliError(f"registry request failed: {exc}") from exc
 
-    out_text = json.dumps(payload, indent=2, ensure_ascii=False)
+    try:
+        out_text = json.dumps(payload, indent=2, ensure_ascii=False)
+    except TypeError as exc:
+        raise CliError(f"registry response not JSON-serializable: {exc}") from exc
     _write_out(getattr(args, "output", None), out_text, force=bool(getattr(args, "output", None)))
     return EXIT_OK
 

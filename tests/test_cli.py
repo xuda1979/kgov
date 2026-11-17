@@ -748,6 +748,98 @@ def test_cmd_check_broker_scan_junk_msgs_fail_closed(monkeypatch):
                         output=None)) == 0
 
 
+def test_cmd_registry_junk_client_returns_fail_closed(monkeypatch):
+    """A registry client wire/double returning junk must never traceback.
+
+    Back-to-back with a library double, the request wrapper (except
+    Exception -> CliError) already converts non-iterable version lists and
+    junk info dicts to a clean error. The gap this test guards: non-JSON-
+    serializable values (set/bytes) smuggled into the payload inside junk
+    get_version/to_fixture_dict returns crash raw from json.dumps, because
+    the serialization runs *after* the request wrapper (Fix 28)."""
+    import argparse
+
+    from kgov.cli import CliError, cmd_registry
+
+    def ns(**kw):
+        return argparse.Namespace(**kw)
+
+    def call(subject="s"):
+        return cmd_registry(ns(registry_url="http://127.0.0.1:1", subject=subject,
+                               timeout=10.0, output=None))
+
+    calls = {}
+
+    class JunkClient:
+        def __init__(self, url, timeout=None):
+            pass
+
+        def get_versions(self, subject):
+            return calls["versions"]
+
+        def get_version(self, subject, v):
+            return calls["info"]
+
+        def to_fixture_dict(self):
+            return calls["fixture"]
+
+    monkeypatch.setattr("kgov.registry.SchemaRegistryClient", JunkClient)
+
+    good_info = {"id": 1, "version": 1, "compatibility": "BACKWARD", "schema": {"type": "string"}}
+
+    # non-iterable version lists -> clean CliError (existing request wrapper)
+    for versions in (None, 42, 7):
+        calls["versions"] = versions
+        calls["info"] = good_info
+        with pytest.raises(CliError):
+            call()
+
+    # iterable-but-junk versions are tolerated (exit 0, no traceback); a
+    # broken wire cannot crash the scan through the iteration itself
+    for versions in ("v", {"a": 1}, [[1, 2]], [None], [1, "x", None]):
+        calls["versions"] = versions
+        calls["info"] = good_info
+        assert call() == 0
+
+    # junk get_version info (valid versions list): missing keys / None ->
+    # CliError; non-JSON-serializable values (set/bytes) -> CliError via the
+    # serialization guard (Fix 28), never a raw json.dumps TypeError
+    calls["versions"] = [1]
+    for info in ({}, None, {"id": 1, "version": 1, "compatibility": "BACKWARD"},
+                 {"id": {1, 2}, "version": 1, "compatibility": "BACKWARD",
+                  "schema": {}},
+                 {"id": b"x", "version": 1, "compatibility": "BACKWARD",
+                  "schema": {}},
+                 {"id": 1, "version": 1, "compatibility": "BACKWARD",
+                  "schema": b"raw"},
+                 {"id": 1, "version": 1, "compatibility": "BACKWARD",
+                  "schema": {"fields": [{"type": {1, 2}}]}}):
+        calls["info"] = info
+        with pytest.raises(CliError):
+            call()
+    calls["info"] = good_info
+
+    # junk to_fixture_dict (no-subject path): missing/absent subjects -> the
+    # request wrapper raises CliError; non-JSON-serializable subject entries
+    # raise CliError via the serialization guard
+    for fixture in (None, 42, {},
+                    {"subjects": [{"name": "t", "compatibility": {1}}]},
+                    {"subjects": [b"x"]}):
+        calls["fixture"] = fixture
+        with pytest.raises(CliError):
+            call(subject=None)
+    # tolerated: serializable junk subjects render exit 0 (fence)
+    calls["fixture"] = {"subjects": None}
+    assert call(subject=None) == 0
+    calls["fixture"] = {"subjects": {"a": 1}}
+    assert call(subject=None) == 0
+
+    # valid single-subject payload still renders (fence, not broken)
+    calls["versions"] = [1]
+    calls["info"] = good_info
+    assert call() == 0
+
+
 def test_cmd_check_junk_max_violations_fails_closed():
     """A junk max_violations value must not participate in the numeric gate
     comparison; a library caller passing junk gets a fail-closed gate
