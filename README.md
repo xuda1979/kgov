@@ -85,7 +85,7 @@ rules:
 
 ```bash
 kgov check --config rules.yaml --messages messages.json \
-    [--gate] [--max-violations N] [-o violations.json]
+    [--max-violations N] [-o violations.json]
 ```
 
 - 退出码 `0` = 无违规（或在门禁内）、`1` = 发现违规（或超门禁）、

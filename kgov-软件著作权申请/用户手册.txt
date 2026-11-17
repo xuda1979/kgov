@@ -114,7 +114,7 @@
 
     命令格式：
         kgov check --config <rules.yaml> --messages <messages.json>
-            [--gate] [--max-violations N] [-o violations.json] [--quiet]
+            [--max-violations N] [-o violations.json] [--quiet]
 
     数据源二选一：
         --messages <file>            本地 JSON 消息 fixture；

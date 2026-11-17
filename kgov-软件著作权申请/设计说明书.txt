@@ -283,7 +283,7 @@
     --force 与无路径场景冲突时报错。六个子命令参数与功能：
     - schema-diff --before/--after/--format/--subject/--json/-o；
       输出 Markdown 或 JSON，Breaking 返回退出码 1；
-    - check --config/--messages/--broker/--topic/--gate/
+    - check --config/--messages/--broker/--topic/
       --max-violations/-o/--quiet；门禁失败退出码 1；
     - registry --registry-url/--subject/-o；
     - topics --bootstrap/-o；

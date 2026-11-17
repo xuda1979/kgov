@@ -6,7 +6,7 @@ Commands
     kgov schema-diff --before sc1.json --after sc2.json [--format avro|json]
         [--subject NAME] [-o out.json|out.md]
 
-    kgov check --config rules.yaml --messages messages.json [--gate N|--max-violations N]
+    kgov check --config rules.yaml --messages messages.json [--max-violations N]
         Exit code 0 = no violations (or within gate), 1 = violations found
         (or gate exceeded), 2 = usage/config error, 3 = runtime error.
 
