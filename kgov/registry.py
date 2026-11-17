@@ -77,6 +77,13 @@ class SchemaRegistryClient:
             raise RegistryError(f"registry returned invalid UTF-8 for {path}: {exc}") from exc
         except json.JSONDecodeError as exc:
             raise RegistryError(f"registry returned invalid JSON for {path}: {exc}") from exc
+        except (TypeError, ValueError, OverflowError, OSError) as exc:
+            # junk/out-of-range timeouts (non-numeric, NaN, too-large floats)
+            # raise raw TypeError/ValueError/OverflowError from
+            # socket.settimeout before any connection attempt, and raw OSErrors
+            # surfaced outside URLError/HTTPException stay unbundled — funnel
+            # them all through the designed RegistryError contract
+            raise RegistryError(f"registry request for {path} failed: {exc}") from exc
 
     def is_reachable(self) -> bool:
         try:

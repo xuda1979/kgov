@@ -243,6 +243,23 @@ def test_get_non_utf8_body_raises_registry_error(monkeypatch):
         c.list_subjects()
 
 
+def test_junk_timeout_raises_registry_error():
+    """Junk / out-of-range timeout values (non-numeric, NaN, negative, too
+    large for time_t) must raise a clean RegistryError, not leak raw
+    TypeError/ValueError/OverflowError from socket.settimeout before any
+    connection attempt. Valid numeric timeouts still raise RegistryError only
+    for the actual connection refusal."""
+    c = SchemaRegistryClient("http://127.0.0.1:1")
+    for bad in ("abc", {}, [], 1.5, None, -5, True, b"x", (1, 2),
+                1e300, float("inf"), float("nan")):
+        client = SchemaRegistryClient("http://127.0.0.1:1", timeout=bad)
+        with pytest.raises(RegistryError):
+            client.list_subjects()
+        assert client.is_reachable() is False
+    with pytest.raises(RegistryError):
+        c.list_subjects()
+
+
 def test_mock_registry_wire_tolerates_junk_schema_values():
     """Junk fixture schema values (bytes, sets, junk-typed compatibility,
     heterogeneous subject keys) must survive the HTTP wire: the handler
