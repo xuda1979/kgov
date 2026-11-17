@@ -312,6 +312,51 @@ def test_mock_registry_start_junk_ports_raise_clean_error():
         reg.stop()  # must be safe to stop a failed server
 
 
+def test_mock_registry_restart_contract():
+    """Lifecycle round-trip: start binds an ephemeral port and serves;
+    double-start is idempotent (same URL, no rebind); stop is repeatable;
+    and a fresh start after stop binds a new port that serves again. The
+    CLI test fixtures and offline workflows depend on this contract."""
+    import socket
+
+    reg = MockRegistry(dict(FIXTURE))
+    url = reg.start()
+    port = int(url.rsplit(":", 1)[1])
+    assert port > 0
+
+    def one(raw, target_port):
+        s = socket.create_connection(("127.0.0.1", target_port), timeout=5)
+        try:
+            s.sendall(raw)
+            data = b""
+            while True:
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+        finally:
+            s.close()
+        return data
+
+    assert one(b"GET /subjects HTTP/1.0\r\n\r\n", port).startswith(b"HTTP/1.0 200")
+
+    # double-start must not rebind a different port or return a new URL
+    assert reg.start() == url
+    assert int(reg.base_url.rsplit(":", 1)[1]) == port
+
+    reg.stop()
+    reg.stop()  # idempotent: second stop is a no-op
+    assert reg.base_url == "http://127.0.0.1:0"
+
+    # restart after stop binds anew and serves again
+    url2 = reg.start()
+    port2 = int(url2.rsplit(":", 1)[1])
+    assert port2 > 0
+    assert port2 != port
+    assert one(b"GET /mode HTTP/1.0\r\n\r\n", port2).startswith(b"HTTP/1.0 200")
+    reg.stop()
+
+
 def test_registry_handler_path_parts_tolerates_junk_paths():
     """RegistryHandler._path_parts/_subject_from_path with a jail-broken
     self.path (non-strings, missing, odd URL shapes, embedded NULs, junk
