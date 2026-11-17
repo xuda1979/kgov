@@ -177,4 +177,8 @@ class SchemaRegistryClient:
 def _quote_path(segment: str) -> str:
     from urllib.parse import quote
 
-    return quote(str(segment), safe="")
+    # errors="replace": a lone surrogate (e.g. from junk/unicode payload data)
+    # would strict-encode with a raw UnicodeEncodeError from urllib.parse;
+    # the encode-side marker is ASCII "?" (the segment quotes as %3F) so the
+    # segment still produces a valid URL instead of crashing.
+    return quote(str(segment), safe="", errors="replace")

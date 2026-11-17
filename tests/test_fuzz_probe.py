@@ -28,6 +28,9 @@ JUICE = [
     None, 0, 1, -1, 3.14, float("inf"), float("nan"), True, False, "",
     "abc", "1", b"", b"abc", b"\x00\x01", [], [1], [{}], {}, {"a": 1},
     {"x": {"y": 2}}, set(), {1, 2}, (1, 2), (), type(None), object(),
+    # Lone surrogates: json.dumps(ensure_ascii=False) passes them through, but
+    # a later utf-8 encode (file write, stdout) raises UnicodeEncodeError.
+    "\ud800", "\udbff\udfff",
 ]
 
 # Self-referencing containers: json.dumps handles them with a designed

@@ -62,6 +62,19 @@ class CliError(Exception):
     pass
 
 
+def _utf8_safe(text: str) -> str:
+    """Make ``text`` encodable to utf-8.
+
+    ``json.dumps(..., ensure_ascii=False)`` happily returns strings carrying
+    lone surrogates (e.g. the code point U+D800), but encoding them to utf-8
+    (file write, stdout) raises UnicodeEncodeError ("surrogates not allowed").
+    The encode-side ``errors="replace"`` marker is ASCII ``?`` (U+003F) — it
+    fails soft so exports still flow, matching the junk-text str() rendering
+    below instead of the raw-crash contract.
+    """
+    return text.encode("utf-8", errors="replace").decode("utf-8")
+
+
 def _write_out(path: Optional[str], text: str, force: bool = False) -> None:
     if path and not isinstance(path, (str, os.PathLike)):
         # pathlib.Path() rejects non-str/PathLike values (bytes, int, list,
@@ -75,11 +88,17 @@ def _write_out(path: Optional[str], text: str, force: bool = False) -> None:
                 # TypeError ("data must be str"); render it via str() to match
                 # the no-path branch's junk-text handling
                 text = str(text)
-            Path(path).write_text(text, encoding="utf-8")
+            Path(path).write_text(_utf8_safe(text), encoding="utf-8")
         except FileNotFoundError as exc:
             raise CliError(f"cannot write output: no such directory: {path}") from exc
         except IsADirectoryError as exc:
             raise CliError(f"cannot write output: path is a directory: {path}") from exc
+        except UnicodeEncodeError as exc:
+            # a path that cannot be encoded to the filesystem encoding (e.g. a
+            # lone high surrogate — unlike surrogateescape filenames, which
+            # round-trip) cannot name a real file; fail closed like the other
+            # "path unusable" failures
+            raise CliError(f"cannot write output {path!r}: {exc}") from exc
         except OSError as exc:
             raise CliError(f"cannot write output {path!r}: {exc}") from exc
     elif force:
@@ -97,7 +116,7 @@ def _write_out(path: Optional[str], text: str, force: bool = False) -> None:
             # bytes arg (TypeError, not AttributeError), so catch both.
             print(str(text))
             return
-        print(text, end="" if not needs_newline else "\n")
+        print(_utf8_safe(text), end="" if not needs_newline else "\n")
 
 
 def _load_json_or_exit(path: str):
@@ -356,7 +375,7 @@ def cmd_check(args) -> int:
             file=sys.stderr,
         )
     elif not getattr(args, "quiet", False):
-        print(out_text)
+        print(_utf8_safe(out_text))
 
     return EXIT_OK if not gate_failed else EXIT_FAIL
 
