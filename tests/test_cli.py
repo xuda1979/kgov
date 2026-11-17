@@ -248,6 +248,28 @@ def test_report_default_json(capsys):
     assert data["total_topics"] == 3
 
 
+def test_report_rules_messages_accumulate_violations(tmp_path):
+    """AC #3 at the CLI boundary — report wired with --rules + --messages
+    accumulates the real per-topic violation counts from the fixture data."""
+    out = tmp_path / "report.json"
+    code = main([
+        "report",
+        "--topics", str(FIXTURES / "topics" / "topics.json"),
+        "--registry", str(FIXTURES / "registry" / "registry.json"),
+        "--groups", str(FIXTURES / "subject_groups" / "consumer_groups.json"),
+        "--rules", str(FIXTURES / "rules" / "rules_scale.yaml"),
+        "--messages", str(FIXTURES / "messages" / "payments_messages.json"),
+        "-o", str(out),
+    ])
+    assert code == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["total_topics"] == 3
+    payments = next(t for t in data["topics"] if t["name"] == "payments")
+    assert payments["violation_count"] == 9
+    assert all(t["violation_count"] == 0 for t in data["topics"]
+               if t["name"] != "payments")
+
+
 def test_report_csv(tmp_path):
     out = tmp_path / "report.csv"
     code = main(["report", "--topics", str(FIXTURES / "topics" / "topics.json"), "-o", str(out)])
