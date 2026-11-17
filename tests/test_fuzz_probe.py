@@ -273,6 +273,17 @@ def test_registry_probes():
         c = SchemaRegistryClient("http://127.0.0.1:1", timeout=0.1)
         _probe(genuine, "registry.get_schema_by_id.junk",
                c.get_schema_by_id, sid)
+    # remaining public client methods with junk base_url + junk timeout: the
+    # fast-refused base guarantees junk bases that survive url-building fail as
+    # the designed RegistryError, never an unbounded DNS/connect wait.
+    for b in (None, 1, [], {}, b"x", "", set(), float("inf"), 0, 3.14):
+        for t in (None, 1, "x", 0, -1.0, float("inf"), float("nan"), 1e300):
+            c = SchemaRegistryClient(b, timeout=t)
+            _probe(genuine, "registry.get_versions.junk", c.get_versions, "s")
+            _probe(genuine, "registry.get_version.junk", c.get_version, "s", 1)
+            _probe(genuine, "registry.get_latest.junk", c.get_latest, "s")
+            _probe(genuine, "registry.is_reachable.junk", c.is_reachable)
+            _probe(genuine, "registry.to_fixture_dict.junk", c.to_fixture_dict)
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 
@@ -443,6 +454,14 @@ def test_broker_probes():
     rr = bk._RecordReader(object())
     for j in JUICE:
         _probe(genuine, "broker._RecordReader.read", rr.read, j)
+    # a junk decoder_factory is swallowed by AvroRecordDecoder.__call__ (the
+    # factory invocation is wrapped) so public callers always get _UNDECODED;
+    # junk factories must never crash __call__ itself before the wrap.
+    for f in JUICE:
+        dec = bk.AvroRecordDecoder(object(), decoder_factory=f)
+        for _payload in (b"\x00\x00\x00\x00\x00junk", b"", b"\x00", None, 1):
+            _probe(genuine, "broker.AvroRecordDecoder.junk_factory", dec,
+                   _payload)
     # public broker entry points: junk args must fail closed at the pure-Python
     # gates (_require_bootstrap/_require_timeout/topic/group_id/n) before any
     # confluent-kafka import or live client.  bootstrap+timeout (and the other
@@ -531,6 +550,22 @@ def test_mock_registry_probes():
     for seed in mixed_seeds:
         mk3 = mr.MockRegistry(fixture=seed)
         _probe(genuine, "mr.list_subjects.mixed_keys", mk3.list_subjects)
+    # lifecycle sinks: junk ports that cannot bind (non-ints, NaN/inf floats,
+    # out-of-range longs) must fail through the designed MockRegistryError;
+    # bindable ports are excluded so no server thread is ever created.
+    for p in (None, "x", 3.14, float("nan"), float("inf"), [], {}, set(),
+              (1,), b"7", 1e300, -1e300):
+        m = mr.MockRegistry()
+        _probe(genuine, "mr.start.junk_port", m.start, p)
+        _probe(genuine, "mr.stop.after_junk", m.stop)
+    lc = mr.MockRegistry()
+    _probe(genuine, "mr.start.then_stop", lc.start, 0)
+    _probe(genuine, "mr.stop", lc.stop)
+    _probe(genuine, "mr.stop.idempotent", lc.stop)
+    _probe(genuine, "mr.base_url.unstarted", lambda: mr.MockRegistry().base_url)
+    c_un = mr.MockRegistry().client
+    _probe(genuine, "mr.client.unstarted_base", lambda: c_un.base_url)
+    _probe(genuine, "mr.client.list_subjects.unstarted", c_un.list_subjects)
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 
@@ -609,4 +644,22 @@ def test_cli_internals_probes(tmp_path, monkeypatch):
     _probe(genuine, "cli.main.mixed_junk", c.main, [1, b"x", [], {}])
     _probe(genuine, "cli.main.unknown_cmd", c.main, ["bogus-cmd"])
     _probe(genuine, "cli.build_parser", c.build_parser)
+    # _validate: with at least one source gate guaranteed to fail, junk never
+    # reaches a live client.  messages_path junk always fails its gate first
+    # (_validate runs the messages branch before the broker branch); the
+    # broker branch junk is probed with a non-str broker so the --broker gate
+    # fails before any confluent import / AdminClient is touched.
+    import kgov.rules as rl
+
+    rs = rl.RuleSet()
+    for j in JUICE:
+        _probe(genuine, "cli._validate.junk_msgpath", c._validate, rs, j,
+               None, None)
+        _probe(genuine, "cli._validate.junk_broker", c._validate, rs, None,
+               j, None)
+        _probe(genuine, "cli._validate.junk_topic", c._validate, rs, None,
+               b"x", j)
+        _probe(genuine, "cli._validate.junk_registry", c._validate, rs,
+               None, b"x", b"x", j)
+    _probe(genuine, "cli._validate.both_junk", c._validate, rs, None, 3.14, [])
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
