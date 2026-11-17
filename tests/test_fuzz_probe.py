@@ -321,9 +321,29 @@ def test_rules_probes():
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 
-# ---------------------------------------------------------------------------
-# report
-# ---------------------------------------------------------------------------
+def test_rules_internals_probes():
+    """Internal rules helpers (never directly fuzzed by the top-level battery)
+    must fail closed on junk: _merge_rule/_merge_fields/_validate_type/
+    _validate_field_spec/_type_ok/_type_repr/_json_safe_key, and the
+    file-driven validate_fixture_file / iter_messages_from_json."""
+    import kgov.rules as rl
+
+    genuine = {}
+    for j in JUICE:
+        _probe(genuine, "rules._merge_rule", rl._merge_rule, rl.RuleSet(), j)
+        _probe(genuine, "rules._merge_fields", rl._merge_fields,
+               rl.RuleSet(), j, "r")
+        _probe(genuine, "rules._validate_type", rl._validate_type, "f", j, "r")
+        _probe(genuine, "rules._validate_field_spec", rl._validate_field_spec,
+               "f", j, "r")
+        _probe(genuine, "rules._type_ok", rl._type_ok, "int", j)
+        _probe(genuine, "rules._type_repr", rl._type_repr, j)
+        _probe(genuine, "rules._json_safe_key", rl._json_safe_key, j)
+        _probe(genuine, "rules.validate_fixture_file",
+               rl.validate_fixture_file, rl.RuleSet(), j)
+        _probe(genuine, "rules.iter_messages_from_json",
+               lambda: list(rl.iter_messages_from_json(j)))
+    assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 
 def test_report_probes():
@@ -376,6 +396,7 @@ def test_report_probes():
                       b"2020-01-01", "2020-13-01",
                       "2020-01-01T00:00:00+05:30"]:
         _probe(genuine, "report._parse_dt", rp._parse_dt, j)
+        _probe(genuine, "report._read_json", rp._read_json, j)
 
     st = rp.TopicState(name="t", tags=None, partitions=None, schema_version=None,
                        stale=None, violation_count=None)
@@ -479,9 +500,12 @@ def test_mock_registry_probes():
     ["cmd_schema_diff", "cmd_check", "cmd_topics", "cmd_registry",
      "cmd_report", "cmd_export"],
 )
-def test_cli_probes(cmd_name):
+def test_cli_probes(cmd_name, tmp_path, monkeypatch):
     import kgov.cli as c
 
+    # truthy-string junk path values ("1", "abc") legitimately pass the output
+    # gate and write files; keep that probe output in the temp dir
+    monkeypatch.chdir(tmp_path)
     fn = getattr(c, cmd_name)
     genuine = {}
     for j in JUICE:
@@ -498,4 +522,34 @@ def test_cli_probes(cmd_name):
         )})
         _probe(genuine, f"cli.{cmd_name}.junk_namespace", fn, ns)
     _probe(genuine, f"cli.{cmd_name}.junk_namespace_all", fn, _namespace_junk())
+    assert genuine == {}, f"genuine crashes escaped: {genuine}"
+
+
+def test_cli_internals_probes(tmp_path, monkeypatch):
+    """Internal cli helpers (never directly fuzzed by the cmd-handler battery)
+    must fail closed on junk: _write_out (both stdout and file-write branches),
+    _load_json_or_exit, _load_schema_text, _require_export_format.
+
+    The working directory is moved to tmp_path so that truthy-string path
+    values in JUICE ("1", "abc") that legitimately pass the ``if path:`` gate
+    write their probe output into the temp dir, never the repo tree.
+    """
+    import kgov.cli as c
+
+    monkeypatch.chdir(tmp_path)
+    genuine = {}
+    out = str(tmp_path / "out.txt")
+    for j in JUICE:
+        _probe(genuine, "cli._write_out.junk_path", c._write_out, j, "x")
+        _probe(genuine, "cli._write_out.junk_text_nopath", c._write_out, None, j)
+        _probe(genuine, "cli._write_out.truthy_path_junk_text",
+               c._write_out, out, j)
+        _probe(genuine, "cli._load_json_or_exit", c._load_json_or_exit, j)
+        _probe(genuine, "cli._load_schema_text", c._load_schema_text, j, None)
+        _probe(genuine, "cli._load_schema_text.fmt",
+               c._load_schema_text, "{}", j)
+        ns = type("A", (), {"format": j, "type": "report"})()
+        _probe(genuine, "cli._require_export_format",
+               c._require_export_format, ns, {"json", "csv"})
+    _probe(genuine, "cli.build_parser", c.build_parser)
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
