@@ -69,6 +69,12 @@ def _write_out(path: Optional[str], text: str, force: bool = False) -> None:
         path = None
     if path:
         try:
+            if not isinstance(text, str):
+                # junk text (None, ints, bytes, containers, ...) from a direct
+                # library caller would raw-crash Path.write_text with a bare
+                # TypeError ("data must be str"); render it via str() to match
+                # the no-path branch's junk-text handling
+                text = str(text)
             Path(path).write_text(text, encoding="utf-8")
         except FileNotFoundError as exc:
             raise CliError(f"cannot write output: no such directory: {path}") from exc

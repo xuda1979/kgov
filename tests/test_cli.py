@@ -493,12 +493,26 @@ def test_write_out_junk_text_no_traceback(capsys):
 
     for text in (None, 42, 3.5, b"x", ["a"], {"a": 1}, {"s"}, (1, 2)):
         _write_out(None, text)  # stdin/stdout path; must not raise
-    # valid str behavior is preserved: exactly one trailing newline
     for text in ("hello", "hello\n", "multi\nline"):
         capsys.readouterr()
         _write_out(None, text)
         out = capsys.readouterr().out
         assert out == text if text.endswith("\n") else out == text + "\n"
+
+
+def test_write_out_junk_text_with_path_fails_closed(tmp_path):
+    """``cli._write_out`` with a real output path and none-str ``text`` must
+    render via str() instead of raw-crashing Path.write_text with a bare
+    TypeError ("data must be str, not ...")."""
+    from kgov.cli import _write_out
+
+    out = tmp_path / "out.txt"
+    for text in (None, 42, 3.5, b"x", ["a"], {"a": 1}, {"s"}, (1, 2)):
+        _write_out(str(out), text)  # file-write path; must not raise
+        assert out.read_text(encoding="utf-8") == str(text)
+    # valid str behavior is preserved
+    _write_out(str(out), "hello")
+    assert out.read_text(encoding="utf-8") == "hello"
 
 
 # ---------------------------------------------------------------------------
