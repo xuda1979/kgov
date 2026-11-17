@@ -848,6 +848,83 @@ def test_cmd_check_broker_scan_junk_msgs_fail_closed(monkeypatch):
                         output=None)) == 0
 
 
+def test_cmd_check_junk_schema_registry_fails_closed(monkeypatch):
+    """Truthy junk --schema-registry values must raise a clean CliError at the
+    CLI boundary — before any lazy import or live client. Without the gate,
+    SchemaRegistryClient str()'s a list/dict/int/bytes URL into a garbage
+    base_url, the AvroRecordDecoder then silently returns _UNDECODED for every
+    wire message, and a reachable broker passes the gate as if it decoded
+    everything — a dead-decoder false pass for the same junk class already
+    gated for --broker/--topic."""
+    import argparse
+
+    from kgov.broker import BrokerMessage
+    from kgov.cli import CliError, cmd_check
+
+    rules = str(FIXTURES / "rules" / "rules_scale.yaml")
+
+    def ns(**kw):
+        return argparse.Namespace(**kw)
+
+    monkeypatch.setattr(
+        "kgov.broker.read_topic",
+        lambda bootstrap, topic, value_decoder=None, **kw:
+        [BrokerMessage(topic="t", partition=0, offset=1,
+                       key=None, value={"amount_cents": 100})],
+    )
+
+    # every junk registry value -> CliError, never a wire call
+    for junk in ([], [("http://x",)], {"u": 1}, 42, b"http://x", 3.5,
+                 True, object()):
+        with pytest.raises(CliError, match="schema-registry"):
+            cmd_check(ns(config=rules, messages=None, broker="127.0.0.1:9092",
+                         topic="t", max_violations=None, schema_registry=junk,
+                         output=None))
+    # None (absent flag) and a well-formed URL are accepted (fence, not broken)
+    for ok in (None, "http://127.0.0.1:8081"):
+        assert cmd_check(ns(config=rules, messages=None,
+                            broker="127.0.0.1:9092", topic="t",
+                            max_violations=None, schema_registry=ok,
+                            output=None)) == 0
+
+
+def test_cmd_check_schema_registry_wires_decoder(monkeypatch):
+    """A broker scan with --schema-registry must wire an AvroRecordDecoder into
+    read_topic: the flag's only purpose. The wiring runs inside _validate, so
+    this pins the cli.py branch that constructs
+    AvroRecordDecoder(SchemaRegistryClient(url)) — no live registry is touched
+    (SchemaRegistryClient is only constructed, never called)."""
+    import argparse
+
+    from kgov.broker import AvroRecordDecoder, BrokerMessage
+    from kgov.cli import cmd_check
+
+    rules = str(FIXTURES / "rules" / "rules_scale.yaml")
+    calls = {}
+
+    def capture(bootstrap, topic, value_decoder=None, **kw):
+        calls["decoder"] = value_decoder
+        return [BrokerMessage(topic="t", partition=0, offset=1,
+                              key=None, value={"amount_cents": 100})]
+
+    monkeypatch.setattr("kgov.broker.read_topic", capture)
+    code = cmd_check(argparse.Namespace(
+        config=rules, messages=None, broker="127.0.0.1:9092", topic="t",
+        max_violations=None, schema_registry="http://127.0.0.1:8081",
+        output=None))
+    assert code == 0
+    # the wiring passed a decoder built from a real SchemaRegistryClient
+    assert isinstance(calls["decoder"], AvroRecordDecoder)
+
+    # without the flag, no decoder is wired
+    monkeypatch.setattr("kgov.broker.read_topic", capture)
+    code = cmd_check(argparse.Namespace(
+        config=rules, messages=None, broker="127.0.0.1:9092", topic="t",
+        max_violations=None, schema_registry=None, output=None))
+    assert code == 0
+    assert calls["decoder"] is None
+
+
 def test_cmd_registry_junk_client_returns_fail_closed(monkeypatch):
     """A registry client wire/double returning junk must never traceback.
 
