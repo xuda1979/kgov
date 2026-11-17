@@ -380,6 +380,42 @@ def test_report_violations_junk_topic_exit_0(tmp_path, capsys):
     assert payments["violation_count"] == 1
 
 
+def test_report_violations_wrapper_shape(tmp_path, capsys):
+    """report --violations accepts the dict-wrapper form {'violations': [...]}
+    (cli.cmd_report:480-481) and counts matching topics; junk entries inside
+    the list are ignored cleanly (exit 0), matching the flat-list behavior."""
+    vio = tmp_path / "vio.json"
+    vio.write_text('{"violations": [{"topic": "payments", "message": "x"}, '
+                   '"garbage", {"topic": "no-such-topic"}]}', encoding="utf-8")
+    code = main(["report", "--topics", str(FIXTURES / "topics" / "topics.json"),
+                 "--violations", str(vio)])
+    assert code == 0
+    data = json.loads(capsys.readouterr().out)
+    payments = next(t for t in data["topics"] if t["name"] == "payments")
+    assert payments["violation_count"] == 1
+    others = [t for t in data["topics"] if t["name"] != "payments"]
+    assert all(t["violation_count"] == 0 for t in others)
+
+
+def test_report_violations_junk_shape_tolerated(tmp_path, capsys):
+    """A --violations file whose JSON shape is not a list of entries (dict
+    without a violations list, scalar, empty list) must be treated as no
+    violations (exit 0), not crash on a .get()/.extend() TypeError."""
+    shapes = ('{"foo": 1}', '{"violations": "junk"}', "42", "3.5", "null", "[]")
+    topics = str(FIXTURES / "topics" / "topics.json")
+    for i, payload in enumerate(shapes):
+        vio = tmp_path / f"vio{i}.json"
+        vio.write_text(payload, encoding="utf-8")
+        code = main(["report", "--topics", topics, "--violations", str(vio)])
+        assert code == 0, payload
+        data = json.loads(capsys.readouterr().out)
+        assert all(t["violation_count"] == 0 for t in data["topics"]), payload
+    # non-path --violations values fail closed with a clean runtime error
+    code = main(["report", "--topics", topics, "--violations", "42"])
+    assert code == 3
+    assert "file not found" in capsys.readouterr().err
+
+
 def test_report_registry_junk_versions_exit_0(tmp_path, capsys):
     """A registry subject whose latest version entry is non-dict junk must not
     crash (exit 0); an earlier valid mapping is still honored."""
