@@ -115,6 +115,7 @@ def test_model_probes():
         _probe(genuine, "model.json_default", m.json_default, j)
         _probe(genuine, "model._json_safe", m._json_safe, j)
         _probe(genuine, "model._json_safe_key", m._json_safe_key, j)
+    _probe(genuine, "model.now_utc_iso", m.now_utc_iso)
     for kind in ("Breaking", "Non-Breaking", "Additive", 1, None, b"x", [], {}, set()):
         for p in ("a.b", 1, None, b"x", [], {}):
             for msg in ("hi", 1, None, b"x", [], {}):
@@ -264,6 +265,14 @@ def test_registry_probes():
         c = SchemaRegistryClient("http://127.0.0.1:1", timeout=t)
         _probe(genuine, "registry.SchemaRegistryClient.list_subjects.junk_timeout",
                c.list_subjects)
+    # junk schema ids must fail closed (int() raises OverflowError for
+    # out-of-range floats like inf/1e300) and never touch the network until
+    # the id has actually converted.
+    for sid in (None, 1, 0, -3, b"7", "7", 3.14, float("inf"), float("nan"),
+                1e300, [], {}, set(), (1, 2), object()):
+        c = SchemaRegistryClient("http://127.0.0.1:1", timeout=0.1)
+        _probe(genuine, "registry.get_schema_by_id.junk",
+               c.get_schema_by_id, sid)
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 
@@ -343,6 +352,13 @@ def test_rules_internals_probes():
                rl.validate_fixture_file, rl.RuleSet(), j)
         _probe(genuine, "rules.iter_messages_from_json",
                lambda: list(rl.iter_messages_from_json(j)))
+        _probe(genuine, "rules.load_rules_file.junk",
+               rl.load_rules_file, j)
+    # deeply nested YAML blows PyYAML's recursive scanner with a raw
+    # RecursionError; load_rules_yaml must surface the designed parse error
+    for text in ("[" * 20000 + "x", '{"a": ' * 5000 + "1" + "}" * 5000):
+        _probe(genuine, "rules.load_rules_yaml.deep_nesting",
+               rl.load_rules_yaml, text)
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 
@@ -427,6 +443,16 @@ def test_broker_probes():
     rr = bk._RecordReader(object())
     for j in JUICE:
         _probe(genuine, "broker._RecordReader.read", rr.read, j)
+    # public broker entry points: junk args must fail closed at the pure-Python
+    # gates (_require_bootstrap/_require_timeout/topic/group_id/n) before any
+    # confluent-kafka import or live client.  bootstrap+timeout (and the other
+    # args) always come from the same junk shape, so no pairing can pass every
+    # gate and touch the network.
+    for j in JUICE:
+        _probe(genuine, "broker.list_topics.junk", bk.list_topics, j, j)
+        _probe(genuine, "broker.consumer_groups.junk", bk.consumer_groups, j, j)
+        _probe(genuine, "broker.read_topic.junk",
+               lambda j=j: bk.read_topic(j, j, group_id=j, n=j, timeout=j))
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 
