@@ -599,6 +599,24 @@ def test_export_check_csv_unsupported_exit_3(capsys):
     assert "json" in capsys.readouterr().err
 
 
+def test_export_violations_alias_routes_to_check(capsys):
+    """export --type violations is an alias for check (cli.cmd_export:529-531);
+    it must run the full check gate and reject non-JSON formats cleanly."""
+    rules = FIXTURES / "rules" / "rules_scale.yaml"
+    messages = FIXTURES / "messages" / "payments_messages.json"
+    code = main(["export", "--type", "violations", "--format", "json",
+                 "--config", str(rules), "--messages", str(messages)])
+    assert code == 1  # fixture messages are intentionally dirty
+    data = json.loads(capsys.readouterr().out)
+    assert data["violation_count"] == 9
+    assert len(data["violations"]) == 9
+
+    code = main(["export", "--type", "violations", "--format", "csv",
+                 "--config", str(rules), "--messages", str(messages)])
+    assert code == 3
+    assert "supports --format json" in capsys.readouterr().err
+
+
 # ---------------------------------------------------------------------------
 # registry (live mock server through the CLI)
 # ---------------------------------------------------------------------------
