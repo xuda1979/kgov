@@ -44,6 +44,37 @@ def test_schema_diff_additive_markdown(capsys):
     assert "SCHEMA DIFF" in out.err
 
 
+def test_schema_diff_version_id_markdown_flags(capsys):
+    """--before/--after-version, --before/--after-id and --markdown must
+    render into the diff output: the markdown header echoes the versions, the
+    JSON payload carries all four, and --markdown never emits JSON."""
+    before = str(FIXTURES / "schemas" / "v1.json")
+    after = str(FIXTURES / "schemas" / "v2.json")
+    code = main(["schema-diff", "--before", before, "--after", after,
+                 "--before-version", "3", "--after-version", "7"])
+    out = capsys.readouterr()
+    assert code == 0
+    assert "Version 3 \u2192 7" in out.out
+
+    code = main(["schema-diff", "--before", before, "--after", after,
+                 "--markdown"])
+    out = capsys.readouterr()
+    assert code == 0
+    assert out.out.lstrip().startswith("#")
+    assert not out.out.lstrip().startswith("{")
+
+    code = main(["schema-diff", "--before", before, "--after", after,
+                 "--before-id", "11", "--after-id", "22",
+                 "--before-version", "3", "--after-version", "7", "--json"])
+    out = capsys.readouterr()
+    assert code == 0
+    data = json.loads(out.out)
+    assert data["before_version"] == 3
+    assert data["after_version"] == 7
+    assert data["before_id"] == 11
+    assert data["after_id"] == 22
+
+
 def test_schema_diff_breaking_exit_1(tmp_path):
     out = tmp_path / "diff.json"
     code = main([
