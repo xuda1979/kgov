@@ -829,6 +829,51 @@ def test_registry_wire_mode_single_response(server) -> None:
     assert b"{\"mode\": \"READWRITE\"}" in data
 
 
+def test_registry_wire_routing_table_single_response(server) -> None:
+    """Every route in the do_GET/POST/PUT/DELETE table must emit exactly one
+    response. The /mode fall-through (two stacked replies on one connection)
+    only corrupted keep-alive streams invisibly to http.client, which surfaces
+    just the first response; a raw read to socket close catches any regrowth.
+    One HEAD is per path; a DOUBLE means an integer multiple escaped."""
+    import socket
+
+    port = int(server.base_url.rsplit(":", 1)[1])
+    routes = [
+        (b"GET /subjects HTTP/1.0\r\n\r\n", b"HTTP/1.0 200"),
+        (b"GET /subjects/payments-value/versions HTTP/1.0\r\n\r\n", b"HTTP/1.0 200"),
+        (b"GET /subjects/payments-value/versions/1 HTTP/1.0\r\n\r\n", b"HTTP/1.0 200"),
+        (b"GET /config HTTP/1.0\r\n\r\n", b"HTTP/1.0 200"),
+        (b"GET /config/payments-value HTTP/1.0\r\n\r\n", b"HTTP/1.0 200"),
+        (b"GET /schemas/ids/2 HTTP/1.0\r\n\r\n", b"HTTP/1.0 200"),
+        (b"GET /mode HTTP/1.0\r\n\r\n", b"HTTP/1.0 200"),
+        (b"GET /bogus HTTP/1.0\r\n\r\n", b"HTTP/1.0 404"),
+        (b"GET /subjects/nope/versions HTTP/1.0\r\n\r\n", b"HTTP/1.0 404"),
+        (b"POST /subjects HTTP/1.0\r\n\r\n", b"HTTP/1.0 404"),
+        (b"PUT /config HTTP/1.0\r\n\r\n", b"HTTP/1.0 405"),
+        (b"DELETE /subjects/x HTTP/1.0\r\n\r\n", b"HTTP/1.0 405"),
+    ]
+    for raw, expect in routes:
+        s = socket.create_connection(("127.0.0.1", port), timeout=5)
+        try:
+            s.sendall(raw)
+            data = b""
+            while True:
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+        finally:
+            s.close()
+        assert data.count(b"HTTP/1.0") == 1, (
+            f"path {raw.split()[1].decode()!r} stacked responses: "
+            f"{data.decode('utf-8', 'replace')}"
+        )
+        assert data.startswith(expect), (
+            f"path {raw.split()[1].decode()!r} unexpected status: "
+            f"{data.split(b'\r\n')[0].decode()!r}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # junk argv / unreadable paths (CLI entry surface)
 # ---------------------------------------------------------------------------
