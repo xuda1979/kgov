@@ -98,6 +98,11 @@ def load_rules_yaml(text: str) -> RuleSet:
         data = yaml.safe_load(text)
     except yaml.YAMLError as exc:
         raise RulesConfigError(f"invalid YAML: {exc}") from exc
+    except RecursionError as exc:
+        # PyYAML's scanner recurses once per nesting level; a deeply nested
+        # document (accidental or adversarial) blows the interpreter stack
+        # with a raw RecursionError — surface it as the designed parse error
+        raise RulesConfigError("invalid YAML: document nesting too deep") from exc
     return build_ruleset(data)
 
 

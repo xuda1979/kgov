@@ -136,7 +136,9 @@ class SchemaRegistryClient:
     def get_schema_by_id(self, schema_id: int) -> dict:
         try:
             schema_id_int = int(schema_id)
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
+            # out-of-range floats (inf, 1e300, ...) raise OverflowError from
+            # int(); treat them as invalid ids like the other junk shapes
             raise RegistryError(f"invalid schema id {schema_id!r}") from exc
         data = self._get(f"/schemas/ids/{schema_id_int}")
         if not isinstance(data, dict):
