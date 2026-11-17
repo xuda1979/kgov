@@ -995,6 +995,26 @@ def test_cmd_topics_tolerates_junk_bootstrap_and_options(monkeypatch, capsys):
     capsys.readouterr()
 
 
+def test_topics_dispatch_exit_codes(monkeypatch, capsys):
+    """topics is the only subcommand with no main()-level dispatch pin (the
+    handlers for schema-diff/check/report/registry/export all route through
+    ``main``). A failed metadata pull must exit 3 with a clean error — never
+    pass the gate with an empty list — and a successful pull must exit 0 with
+    the topics JSON payload on stdout."""
+    def boom(bootstrap, timeout=10.0):
+        raise RuntimeError("cannot list topics")
+
+    monkeypatch.setattr("kgov.broker.list_topics", boom)
+    assert main(["topics", "--bootstrap", "127.0.0.1:9"]) == 3
+    assert "failed to list topics" in capsys.readouterr().err
+
+    monkeypatch.setattr("kgov.broker.list_topics",
+                        lambda bootstrap, timeout=10.0: ["payments", "orders"])
+    assert main(["topics", "--bootstrap", "127.0.0.1:9092"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["topics"] == ["payments", "orders"]
+
+
 def test_load_schema_text_tolerates_junk_refs_fail_closed():
     """_load_schema_text (the schema-diff before/after ref loader) is the one
     public cli helper Fixes 22-28 never probed. Every junk ref class must fold
