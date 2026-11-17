@@ -202,7 +202,10 @@ def _validate_type(field_name: str, t: str, rule_name: str) -> None:
         "string", "integer", "int", "number", "boolean", "bool",
         "array", "object", "record", "map",
     }
-    if t not in allowed:
+    # unhashable t (list/dict/set) would raw-crash "t not in allowed"; a
+    # non-string type is by definition unknown, so raise the designed error
+    # without ever touching set membership
+    if not isinstance(t, str) or t not in allowed:
         raise UnknownFieldTypeError(
             f"field '{field_name}' in rule '{rule_name}' has unknown type '{t}'")
 

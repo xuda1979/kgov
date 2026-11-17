@@ -371,6 +371,10 @@ def _avro_diff(a: Any, b: Any, path: str = "", results: Optional[list] = None) -
 
 def _types_assignable_set(a: set, b: set) -> bool:
     """Every type in set a is assignable from some type in set b."""
+    # junk args (None, ints, dicts, ...) are not type-sets and carry no
+    # assignability relation — fail closed instead of crashing the iteration
+    if not isinstance(a, (set, frozenset)) or not isinstance(b, (set, frozenset)):
+        return False
     for tb in b:
         if tb in _PRIMITIVE_PRIORITY:
             for ta in a:
@@ -428,7 +432,12 @@ def _js_string_types(node: Any) -> set:
 
 
 def _js_scalar_rank(name: str) -> Optional[int]:
-    return _JSON_RANK.get(name, None)
+    # naive dict.get raw-crashes on unhashable names (lists, dicts, sets);
+    # fall back to None like any other unknown rank
+    try:
+        return _JSON_RANK.get(name, None)
+    except TypeError:
+        return None
 
 
 def _js_strings_assignable(children: set, parent: set) -> bool:
@@ -436,6 +445,10 @@ def _js_strings_assignable(children: set, parent: set) -> bool:
 
     ``number`` acts as a supertype of ``integer``.
     """
+    # junk args (None, ints, dicts, ...) are not type-sets and carry no
+    # assignability relation — fail closed instead of crashing membership
+    if not isinstance(children, (set, frozenset)) or not isinstance(parent, (set, frozenset)):
+        return False
     if "any" in parent:
         return True
     for tchild in children:

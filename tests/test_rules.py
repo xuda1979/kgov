@@ -427,3 +427,17 @@ def test_validate_message_junk_msg_attrs_no_traceback():
                       value={"amount_cents": -1})
         for v in validate_message(rs, msg):
             v.to_dict()  # must not raise
+
+
+def test_validate_type_junk_t_no_traceback():
+    """_validate_type does 't not in allowed' set membership: unhashable t
+    (list/dict/set) raw-crashes — non-string types must raise the designed
+    UnknownFieldTypeError without touching membership (Fix 40, round 11)."""
+    from kgov.rules import _validate_type
+
+    for t in ([], {}, set(), None, 42, 2.5, b"x", object(), True, ("int",)):
+        with pytest.raises(UnknownFieldTypeError):
+            _validate_type("f", t, "r")  # must raise designed error, not TypeError
+    # valid paths intact
+    _validate_type("f", "string", "r")
+    _validate_type("f", "int", "r")

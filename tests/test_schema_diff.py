@@ -641,3 +641,49 @@ def test_schema_diff_report_to_dict_tolerates_unpicklable_leaves():
         out = SchemaDiffReport(**base).to_dict()
         assert isinstance(out, dict) and out["compatible"] is True
         assert json.dumps(_json_safe(out))
+
+
+def test_types_assignable_set_junk_args_no_traceback():
+    """_types_assignable_set iterates both sets: junk args (None, ints,
+    floats, dicts, ...) raw-crash the loops — fail closed to False instead
+    (Fix 40, round 11)."""
+    from kgov.schema_diff import _types_assignable_set
+
+    for bad in (None, 42, 2.5, object(), True, {"a": 1}):
+        # junk in either position must not raise; no assignability relation
+        assert _types_assignable_set(bad, {"string"}) is False
+        assert _types_assignable_set({"string"}, bad) is False
+    # str/list/tuple are iterable but not type-sets — same fail-closed result
+    assert _types_assignable_set("x", {"string"}) is False
+    assert _types_assignable_set({"string"}, ["string"]) is False
+    # valid paths intact
+    assert _types_assignable_set({"string"}, {"string"}) is True
+    assert _types_assignable_set({"long"}, {"long", "int"}) is True
+
+
+def test_js_scalar_rank_unhashable_names_no_traceback():
+    """_js_scalar_rank calls _JSON_RANK.get(name): naive get raw-crashes on
+    unhashable names (lists, dicts, sets) — return None like any unknown rank
+    (Fix 40, round 11)."""
+    from kgov.schema_diff import _js_scalar_rank
+
+    for name in ([], {}, set(), ["integer"], {"k": 1}):
+        assert _js_scalar_rank(name) is None  # must not raise
+    # valid paths intact
+    assert _js_scalar_rank("integer") == 2
+    assert _js_scalar_rank("nope") is None
+
+
+def test_js_strings_assignable_junk_args_no_traceback():
+    """_js_strings_assignable does set membership and iteration on both sets:
+    junk args (None, ints, dicts, ...) raw-crash 'in'/'for' — fail closed to
+    False instead (Fix 40, round 11)."""
+    from kgov.schema_diff import _js_strings_assignable
+
+    for bad in (None, 42, 2.5, object(), True, ["any"], {"a": 1}):
+        assert _js_strings_assignable(bad, {"any"}) is False
+        assert _js_strings_assignable({"any"}, bad) is False
+    # valid paths intact
+    assert _js_strings_assignable({"integer"}, {"number"}) is True
+    assert _js_strings_assignable({"string"}, {"any"}) is True
+    assert _js_strings_assignable({"number"}, {"integer"}) is False
