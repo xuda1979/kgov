@@ -240,6 +240,21 @@ def test_topic_mismatch_ignored():
     assert validate_message(rs, msg) == []
 
 
+def test_validate_message_junk_rs_or_msg_no_traceback():
+    """``validate_message`` with junk rs/msg (a direct library caller or test
+    double) must fail closed to [] instead of raw-crashing on ``rs.topic`` /
+    ``msg.topic`` AttributeError."""
+    rs = _rs()
+    msg = Message(topic="payments", partition=0, offset=0, key="k",
+                  value={"amount_cents": 1, "currency": "USD", "status": "ACCEPTED"})
+    for junk in (None, 42, 3.5, "x", b"x", ["a"], {"topic": "payments"}, {"s"}, (1, 2), object()):
+        assert validate_message(junk, msg) == []
+        assert validate_message(rs, junk) == []
+    assert validate_message(None, None) == []
+    # valid behavior is preserved
+    assert validate_message(rs, msg) == []
+
+
 def test_fixture_iter_messages():
     path = FIXTURES / "messages" / "payments_messages.json"
     msgs = list(iter_messages_from_json(path))

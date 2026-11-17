@@ -288,6 +288,11 @@ class Message:
 
 def validate_message(rs: RuleSet, msg: Message) -> list[Violation]:
     """Run a message through the rules; returns all violations (none = ok)."""
+    # A junk rs/msg from a direct library caller (or a test double) would
+    # raw-crash on rs.topic / msg.topic below. Fail closed: no usable rule
+    # set or message, so no violations can be assessed.
+    if not hasattr(rs, "topic") or not hasattr(rs, "fields") or not hasattr(msg, "topic"):
+        return []
     topic_ok = rs.topic == "*" or rs.topic == msg.topic
     if not topic_ok:
         return []
