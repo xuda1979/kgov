@@ -138,7 +138,10 @@ class SchemaDiffReport:
             "## Changes",
             "",
         ]
-        if not self.results:
+        # only an iterable of results can be rendered; junk values (an int, a
+        # string, a mapping, ...) built by a direct caller would crash the
+        # iteration below and carry no changes — fall back to the empty path
+        if not isinstance(self.results, (list, tuple)) or not self.results:
             lines.append("_No structural changes detected._")
             return "\n".join(lines)
         icon_map = {"Breaking": "-", "Non-Breaking": "~", "Additive": "+"}

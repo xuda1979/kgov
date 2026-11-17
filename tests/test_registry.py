@@ -389,3 +389,64 @@ def test_registry_handler_reply_tolerates_junk_payloads():
     h = CaptureHandler()
     RegistryHandler._reply(h, 201, {"ok": [1, 2]})
     assert h.wfile.getvalue() == b'{"ok": [1, 2]}'
+
+
+def test_as_int_tolerates_out_of_range_float():
+    """_as_int must fall back to its default for out-of-range floats (inf,
+    values beyond the platform double range) whose int() raises OverflowError
+    — not leak the raw traceback."""
+    from kgov.mock_registry import _as_int
+
+    assert _as_int(5, -1) == 5
+    assert _as_int(2.0, -1) == 2
+    for bad in (float("inf"), float("-inf"), float("nan"), 1e400):
+        assert _as_int(bad, -1) == -1
+    assert _as_int("7", -1) == 7
+    for bad in ("x", None, [1], {"a": 1}, b"x"):
+        assert _as_int(bad, -1) == -1
+
+
+def test_mock_registry_schema_by_id_tolerates_out_of_range_id():
+    """schema_by_id with out-of-range float ids (inf, 1e400) must resolve to
+    None (no match) rather than raw-crash on OverflowError from int()."""
+    reg = MockRegistry(dict(FIXTURE))
+    for bad in (float("inf"), float("-inf"), float("nan"), 1e400):
+        assert reg.schema_by_id(bad) is None  # must not raise
+    # a valid bound id still resolves (to the fixture's schema dict, id 2)
+    assert reg.schema_by_id(2)["name"] == "Payment"
+
+
+def test_registry_handler_do_get_fails_closed_without_registry():
+    """A RegistryHandler built without a bound registry (a direct call or
+    test double) must fail closed to a clean 404 response on do_GET rather
+    than raw-crash on attribute access mid-route."""
+    import io
+
+    from kgov.mock_registry import RegistryHandler
+
+    captures = []
+
+    class BareHandler(RegistryHandler):
+        def __init__(self, path):
+            self.path = path
+            self.wfile = io.BytesIO()
+        def send_response(self, code, *args):
+            captures.append(("response", code))
+        def send_header(self, k, v):
+            captures.append(("header", k, v))
+        def end_headers(self):
+            captures.append(("end",))
+
+    # NOTE: no `registry` attribute anywhere on the handler instance/class
+    for path in ("/subjects", "/subjects/pay/versions", "/schemas/ids/1",
+                 "/config/pay", "/mode", "/nope"):
+        captures.clear()
+        h = BareHandler(path)
+        h.do_GET()  # must not raise AttributeError
+        assert captures[0] == ("response", 404)
+        assert h.wfile.getvalue(), "a body must have been written"
+    for junk_path in (None, 42, ["a"], b"x"):
+        captures.clear()
+        h = BareHandler(junk_path)
+        h.do_GET()  # must not raise on junk paths either
+        assert h.wfile.getvalue()

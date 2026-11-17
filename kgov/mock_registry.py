@@ -33,7 +33,9 @@ def _as_int(value: Any, default: Any) -> Any:
     """Best-effort int conversion; junk values fall back to ``default``."""
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # out-of-range floats (inf, values beyond the platform double range)
+        # raise OverflowError from int(); treat as absent
         return default
 
 
@@ -121,6 +123,13 @@ class RegistryHandler(BaseHTTPRequestHandler):
             self._reply(200, [])
             return
         head = parts[0]
+
+        if not hasattr(self, "registry"):
+            # a handler built without a registry bound (a direct call or test
+            # double) has no backing data — fail closed to a clean 404 rather
+            # than raw-crashing on attribute access mid-route
+            self._error(404, f"No endpoint for {self.path}", 40401)
+            return
 
         if head == "subjects":
             if len(parts) == 1:

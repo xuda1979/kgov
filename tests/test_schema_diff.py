@@ -503,6 +503,26 @@ def test_markdown_tolerates_junk_results_entries():
     assert md.count("- ? **?** `a` —") == 1
 
 
+def test_markdown_tolerates_non_iterable_results():
+    """``SchemaDiffReport.to_markdown()`` must survive a ``results`` value
+    that is not even iterable (an int, a string, a dict, None) — built by a
+    direct caller bypassing the diff entry points — rather than raw-crash the
+    render loop. Junk results fall back to the "no changes" path."""
+    from kgov.model import SchemaDiffReport
+
+    for junk_results in (5, "x", {"k": 1}, b"x", None, 2.5, True):
+        rep = SchemaDiffReport(
+            format="avro",
+            subject="s",
+            before_version=1,
+            after_version=2,
+            results=junk_results,
+        )
+        md = rep.to_markdown()
+        assert "_No structural changes detected._" in md
+
+
+
 def test_report_to_dict_json_serializable_with_junk_results():
     """``SchemaDiffReport.to_dict()`` must survive a bare ``json.dumps`` even
     when ``results`` contains junk entries (bytes, sets, non-string keys,
