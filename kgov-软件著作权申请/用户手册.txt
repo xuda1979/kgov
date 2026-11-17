@@ -283,8 +283,14 @@
     A4：在代码中调整 StalenessSettings 的 consumer_grace_seconds（默认
         3 天）与 producer_grace_seconds（默认 2 天）参数。
     Q5：能不能核对源程序信息？
-    A5：源程序量由 kgov 包源码统计：主程序（不含注释与空行）约 2121
-        行，含测试代码与空行/注释总计约 3878 行。
+    A5：可以。源程序量由 kgov 包源码统计，口径为：剔除 # 注释
+        行与空行后统计代码行数。主程序（kgov 包，不含 tests）约
+        2606 行，分模块为：broker 353、cli 518、mock_registry 262、
+        model 124、registry 130、report 258、rules 407、schema_diff
+        541、rules_errors 7、__init__ 6。连同 tests 测试代码一并
+        统计约 6210 行。若把空行与注释也计入，主程序物理行数约
+        3473 行，含 tests 总计约 8174 行。读数可用 wc -l 与
+        去空白/注释脚本按上述口径复核。
 
 ============================================================
 （以下空白）
