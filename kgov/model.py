@@ -43,7 +43,14 @@ def json_default(obj: Any) -> Any:
     return repr(obj)
 
 
-def _json_safe(value: Any, _seen: Optional[set] = None) -> Any:
+# Fail-closed recursion cap for _json_safe: well past any plausible payload
+# nesting, and far below the interpreter's recursionlimit so a juggernaut set
+# of nested containers degrades to a marker leaf instead of a raw
+# RecursionError on the export path.
+_MAX_JSON_DEPTH = 300
+
+
+def _json_safe(value: Any, _seen: Optional[set] = None, _depth: int = 0) -> Any:
     """Recursively coerce non-JSON-safe values (bytes, bytearray, memoryview,
     set, tuple) into plain JSON-safe forms so that ``to_dict()`` output can go
     straight to ``json.dumps`` with no ``default=`` hook. Unchanged leaves
@@ -53,7 +60,14 @@ def _json_safe(value: Any, _seen: Optional[set] = None) -> Any:
     transitively) would recurse forever and exit as a raw RecursionError on
     the export path; cycle-tracking turns them back into a string leaf so
     they serialize like any other junk value.
+
+    Pathologically deep (but cycle-free) containers would likewise exit as a
+    raw RecursionError before any caller could serialize them; past
+    ``_MAX_JSON_DEPTH`` the subtree is collapsed to a marker leaf so exports
+    still go through.
     """
+    if _depth > _MAX_JSON_DEPTH:
+        return "<nested-too-deep>"
     if isinstance(value, memoryview):
         # memoryview is byte-like but not bytes/bytearray, so the byte path
         # below would not see it; materialize the buffer into bytes so it is
@@ -73,7 +87,7 @@ def _json_safe(value: Any, _seen: Optional[set] = None) -> Any:
             # keys would make json.dumps raw-crash ("keys must be str, int,
             # float, bool or None"). Coerce non-JSON-safe keys like
             # rules._json_safe_key.
-            return {_json_safe_key(k): _json_safe(v, _seen) for k, v in value.items()}
+            return {_json_safe_key(k): _json_safe(v, _seen, _depth + 1) for k, v in value.items()}
         finally:
             _seen.discard(vid)
     if isinstance(value, (list, tuple, set)):
@@ -84,7 +98,7 @@ def _json_safe(value: Any, _seen: Optional[set] = None) -> Any:
             return repr(value)
         _seen.add(vid)
         try:
-            return [_json_safe(v, _seen) for v in value]
+            return [_json_safe(v, _seen, _depth + 1) for v in value]
         finally:
             _seen.discard(vid)
     if isinstance(value, (bytes, bytearray)):

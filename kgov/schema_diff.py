@@ -31,6 +31,13 @@ class SchemaParseError(ValueError):
 
 _MISSING = object()
 
+# Fail-closed recursion cap for the diff engine: comfortably below the
+# interpreter's recursionlimit (the earliest pure-Python helper _desc already
+# refuses past ~499 nestings) so pathologically deep schemas degrade to
+# shallow-safe results instead of a raw RecursionError. Real schemas never
+# nest anywhere near this deep.
+_MAX_RECURSE_DEPTH = 200
+
 
 def _printable(value: Any) -> str:
     if isinstance(value, str):
@@ -41,8 +48,10 @@ def _printable(value: Any) -> str:
         return repr(value)
 
 
-def _desc(value: Any, _seen: Optional[set] = None) -> str:
+def _desc(value: Any, _seen: Optional[set] = None, _depth: int = 0) -> str:
     """Short text description of a schema node for messages."""
+    if _depth > _MAX_RECURSE_DEPTH:
+        return "…"
     if isinstance(value, str):
         return f"`{value}`"
     if isinstance(value, list):
@@ -55,7 +64,7 @@ def _desc(value: Any, _seen: Optional[set] = None) -> str:
             return repr(value)
         _seen.add(vid)
         try:
-            return " | ".join(_desc(v, _seen) for v in value)
+            return " | ".join(_desc(v, _seen, _depth + 1) for v in value)
         finally:
             _seen.discard(vid)
     if isinstance(value, dict):
@@ -136,7 +145,9 @@ def parse_schema_text(text: str, format: Optional[str] = None) -> tuple:
     return parse_schema(text, format)
 
 
-def _name_of(node: Any, _seen: Optional[set] = None) -> str:
+def _name_of(node: Any, _seen: Optional[set] = None, _depth: int = 0) -> str:
+    if _depth > _MAX_RECURSE_DEPTH:
+        return ""
     if isinstance(node, str):
         return node
     if isinstance(node, list):
@@ -149,7 +160,7 @@ def _name_of(node: Any, _seen: Optional[set] = None) -> str:
             return ""
         _seen.add(vid)
         try:
-            return _name_of(node[0], _seen) if node else ""
+            return _name_of(node[0], _seen, _depth + 1) if node else ""
         finally:
             _seen.discard(vid)
     if isinstance(node, dict):
@@ -157,8 +168,10 @@ def _name_of(node: Any, _seen: Optional[set] = None) -> str:
     return ""
 
 
-def _type_names(node: Any, _seen: Optional[set] = None) -> set:
+def _type_names(node: Any, _seen: Optional[set] = None, _depth: int = 0) -> set:
     """Set of Avro type names a node may produce (named types included)."""
+    if _depth > _MAX_RECURSE_DEPTH:
+        return set()
     if isinstance(node, str):
         return {node}
     if isinstance(node, list):
@@ -173,14 +186,14 @@ def _type_names(node: Any, _seen: Optional[set] = None) -> set:
         try:
             out: set = set()
             for b in node:
-                out |= _type_names(b, _seen)
+                out |= _type_names(b, _seen, _depth + 1)
             return out
         finally:
             _seen.discard(vid)
     if isinstance(node, dict):
         t = node.get("type")
         if isinstance(t, list):
-            return _type_names(t, _seen)
+            return _type_names(t, _seen, _depth + 1)
         # junk type tokens (dicts, ...) are unhashable in set membership; only
         # a string token names a type (a dict without one is a record ref)
         return {t} if isinstance(t, str) else {"record"}
@@ -226,7 +239,13 @@ def _join(p: str, child: str) -> str:
     return f"{p}.{child}" if p else child
 
 
-def _avro_diff(a: Any, b: Any, path: str = "", results: Optional[list] = None) -> list:
+def _avro_diff(a: Any, b: Any, path: str = "", results: Optional[list] = None,
+               _depth: int = 0) -> list:
+    # a juggernaut schema (records/arrays nesting far past the cap) would
+    # recurse down to a raw RecursionError; fail closed to whatever results
+    # were gathered so far — a clean, if shallow, diff
+    if _depth > _MAX_RECURSE_DEPTH:
+        return results if results is not None else []
     if results is None:
         results = []
 
@@ -254,7 +273,7 @@ def _avro_diff(a: Any, b: Any, path: str = "", results: Optional[list] = None) -
                 matched_a = a_left.pop(idx)
                 if _name_of(member_a) == _name_of(member_b):  # both named, recurse
                     if isinstance(matched_a, dict) and isinstance(member_b, dict) and matched_a is not member_b:
-                        _avro_diff(matched_a, member_b, path, results)
+                        _avro_diff(matched_a, member_b, path, results, _depth + 1)
             else:
                 add(CompatibilityKind.ADDITIVE, path,
                     f"union branch added: {_desc(member_b)}")
@@ -303,7 +322,7 @@ def _avro_diff(a: Any, b: Any, path: str = "", results: Optional[list] = None) -
 
     ta, tb = a.get("type"), b.get("type")
     if isinstance(ta, list) or isinstance(tb, list):
-        _avro_diff(ta, tb, path, results)
+        _avro_diff(ta, tb, path, results, _depth + 1)
         return results
 
     # named type rename
@@ -348,7 +367,7 @@ def _avro_diff(a: Any, b: Any, path: str = "", results: Optional[list] = None) -
                 add(CompatibilityKind.BREAKING, _join(path, fa["name"]),
                     f"field removed: `{fa['name']}`")
                 continue
-            _avro_diff(fa.get("type"), nf.get("type"), _join(path, fa["name"]), results)
+            _avro_diff(fa.get("type"), nf.get("type"), _join(path, fa["name"]), results, _depth + 1)
             old_default = fa.get("default", _MISSING)
             new_default = nf.get("default", _MISSING)
             if old_default is _MISSING and new_default is not _MISSING:
@@ -386,10 +405,10 @@ def _avro_diff(a: Any, b: Any, path: str = "", results: Optional[list] = None) -
                 f"enum symbol added: `{s}`")
 
     elif ta == "array":
-        _avro_diff(a.get("items"), b.get("items"), _join(path, "items"), results)
+        _avro_diff(a.get("items"), b.get("items"), _join(path, "items"), results, _depth + 1)
 
     elif ta == "map":
-        _avro_diff(a.get("values"), b.get("values"), _join(path, "values"), results)
+        _avro_diff(a.get("values"), b.get("values"), _join(path, "values"), results, _depth + 1)
 
     elif ta == "fixed":
         if a.get("size") != b.get("size"):
@@ -428,8 +447,10 @@ def _types_assignable_set(a: set, b: set) -> bool:
 _JSON_RANK = {"null": 0, "boolean": 1, "integer": 2, "number": 3, "string": 4}
 
 
-def _js_string_types(node: Any) -> set:
+def _js_string_types(node: Any, _depth: int = 0) -> set:
     """Approximate set of JSON types a schema node accepts."""
+    if _depth > _MAX_RECURSE_DEPTH:
+        return {"any"}
     if node is True or node == {}:
         return {"any"}
     if node is False:
@@ -450,7 +471,7 @@ def _js_string_types(node: Any) -> set:
         # (ints, strings, dicts, ...) would crash the iteration below
         if isinstance(branches, list):
             for sub in branches:
-                out |= _js_string_types(sub)
+                out |= _js_string_types(sub, _depth + 1)
     if "enum" in node:
         return { "enum" }
     if "properties" in node or "additionalProperties" in node or "required" in node:
@@ -503,7 +524,13 @@ def _js_strings_assignable(children: set, parent: set) -> bool:
     return True
 
 
-def _js_diff(a: Any, b: Any, path: str = "", results: Optional[list] = None) -> list:
+def _js_diff(a: Any, b: Any, path: str = "", results: Optional[list] = None,
+             _depth: int = 0) -> list:
+    # a juggernaut schema (properties/anyOf nesting far past the cap) would
+    # recurse down to a raw RecursionError; fail closed to whatever results
+    # were gathered so far — a clean, if shallow, diff
+    if _depth > _MAX_RECURSE_DEPTH:
+        return results if results is not None else []
     if results is None:
         results = []
 
@@ -556,7 +583,7 @@ def _js_diff(a: Any, b: Any, path: str = "", results: Optional[list] = None) -> 
             add(CompatibilityKind.BREAKING, _join(path, k),
                 f"property removed: `{k}`")
             continue
-        _js_diff(av, bv, _join(path, k), results)
+        _js_diff(av, bv, _join(path, k), results, _depth + 1)
     for k, bv in pb.items():
         if k in pa:
             continue
@@ -596,7 +623,7 @@ def _js_diff(a: Any, b: Any, path: str = "", results: Optional[list] = None) -> 
 
     for kw in ("items",):
         if kw in a or kw in b:
-            _js_diff(a.get(kw, True), b.get(kw, True), _join(path, kw), results)
+            _js_diff(a.get(kw, True), b.get(kw, True), _join(path, kw), results, _depth + 1)
 
     # format / minLength / max are Non-Breaking breadcrumbs unless tightened.
     # Only numeric bounds are comparable; junk bounds (strings, lists, ...)

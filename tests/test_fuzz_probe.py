@@ -788,3 +788,103 @@ def test_cli_internals_probes(tmp_path, monkeypatch):
                None, b"x", b"x", j)
     _probe(genuine, "cli._validate.both_junk", c._validate, rs, None, 3.14, [])
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
+
+
+# ---------------------------------------------------------------------------
+# deep nesting
+# ---------------------------------------------------------------------------
+
+
+def _deep_nested_list(depth):
+    out = []
+    cur = out
+    for _ in range(depth):
+        cur.append([])
+        cur = cur[-1]
+    return out
+
+
+def _deep_nested_dict(depth):
+    out = {}
+    cur = out
+    for _ in range(depth):
+        cur["a"] = {}
+        cur = cur["a"]
+    return out
+
+
+def _deep_avro_record(depth):
+    out = {"type": "record", "name": "R", "fields": []}
+    cur = out
+    for _ in range(depth):
+        cur["fields"] = [{"name": "a",
+                          "type": {"type": "record", "name": "R",
+                                   "fields": []}}]
+        cur = cur["fields"][0]["type"]
+    return out
+
+
+def _deep_js_schema(depth):
+    out = {"type": "object", "properties": {}}
+    cur = out
+    for _ in range(depth):
+        cur["properties"] = {"a": {"type": "object", "properties": {}}}
+        cur = cur["properties"]["a"]
+    return out
+
+
+def _deep_anyof(depth):
+    out = {"anyOf": [True]}
+    cur = out
+    for _ in range(depth):
+        cur["anyOf"] = [{"anyOf": [True]}]
+        cur = cur["anyOf"][0]
+    return out
+
+
+def test_deep_nesting_probes():
+    """Pathologically deep (but cycle-free) containers must fail closed instead
+    of escaping a raw RecursionError.  Kept out of JUICE on purpose: at the
+    interpreter's recursionlimit (1000), stdlib ``copy`` (used by the
+    asdict/report battery surfaces) cannot even copy a 2000-deep container, so
+    a shared deep JUICE member would raise stdlib-framed GENUINE false
+    positives in every battery surface that copies it.
+
+    The probe depths sit far above the helpers' fail-closed caps
+    (_MAX_JSON_DEPTH=300, _MAX_RECURSE_DEPTH=200), so the marker-leaf paths are
+    exactly what gets exercised.
+    """
+    import kgov.model as m
+    import kgov.schema_diff as sd
+
+    depth = 2000
+    deep_list = _deep_nested_list(depth)
+    deep_dict = _deep_nested_dict(depth)
+    deep_avro = _deep_avro_record(depth)
+    deep_avro_b = _deep_avro_record(depth + 2)
+    deep_js = _deep_js_schema(depth)
+    deep_js_b = _deep_js_schema(depth + 2)
+    deep_anyof = _deep_anyof(depth)
+    genuine = {}
+    _probe(genuine, "deep.model._json_safe.list", m._json_safe, deep_list)
+    _probe(genuine, "deep.model._json_safe.dict", m._json_safe, deep_dict)
+    _probe(genuine, "deep.sd._printable", sd._printable, deep_list)
+    _probe(genuine, "deep.sd._desc", sd._desc, deep_list)
+    _probe(genuine, "deep.sd._name_of", sd._name_of, deep_list)
+    _probe(genuine, "deep.sd._type_names", sd._type_names, deep_list)
+    _probe(genuine, "deep.sd._js_string_types", sd._js_string_types, deep_anyof)
+    _probe(genuine, "deep.sd._avro_diff", sd._avro_diff,
+           deep_avro, deep_avro_b, "", [])
+    _probe(genuine, "deep.sd._js_diff.props", sd._js_diff,
+           deep_js, deep_js_b, "", [])
+    _probe(genuine, "deep.sd.diff_avro", sd.diff_avro, deep_avro, deep_avro_b)
+    _probe(genuine, "deep.sd.diff_json_schema", sd.diff_json_schema,
+           deep_js, deep_js_b)
+    _probe(genuine, "deep.sd.diff_schemas", sd.diff_schemas,
+           deep_avro, deep_avro_b)
+    rep = m.SchemaDiffReport(format="avro", subject="s", before_version=1,
+                             after_version=2, kind="Breaking",
+                             results=[{"kind": "Breaking", "path": "a",
+                                       "message": deep_list}])
+    _probe(genuine, "deep.model.SchemaDiffReport.to_dict", rep.to_dict)
+    assert genuine == {}, f"genuine crashes escaped: {genuine}"
