@@ -1068,3 +1068,40 @@ def test_module_entry_exit_code_contract():
     v1 = str(FIXTURES / "schemas" / "v1.json")
     v2 = str(FIXTURES / "schemas" / "v2.json")
     assert _run_module("schema-diff", "--before", v1, "--after", v2) == 0
+
+
+def test_version_flag_and_pyproject_consistency():
+    """The ``kgov --version`` flag reports the package version and is the one
+    printed surface tied to ``kgov/__init__.py.__version__``. That constant is
+    duplicated by hand in pyproject.toml's ``version`` field; nothing keeps
+    them in sync, so a bump that updates only one side would make the flag
+    silently lie. Pin the process output and both declaration points to the
+    same version string."""
+    import re
+    import subprocess
+    import sys
+
+    # process surface: exactly "kgov <version>", exit 0
+    proc = subprocess.run(
+        [sys.executable, "-m", "kgov.cli", "--version"],
+        capture_output=True,
+        text=True,
+        cwd=Path(__file__).parent.parent,
+        timeout=60,
+    )
+    assert proc.returncode == 0
+    match = re.fullmatch(r"kgov (\S+)\s*", proc.stdout)
+    assert match, f"unexpected --version output: {proc.stdout!r}"
+    cli_version = match.group(1)
+
+    # source of truth: kgov/__init__.py
+    from kgov import __version__
+
+    assert cli_version == __version__
+
+    # pyproject.toml member must not drift from the package constant
+    project_root = Path(__file__).parent.parent
+    pyproject = (project_root / "pyproject.toml").read_text(encoding="utf-8")
+    field = re.search(r"^version\s*=\s*\"([^\"]+)\"", pyproject, re.MULTILINE)
+    assert field, "pyproject.toml missing a version = \"...\" field"
+    assert field.group(1) == __version__
