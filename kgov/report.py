@@ -25,7 +25,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from .model import now_utc_iso
+from .model import now_utc_iso, _json_safe, json_default
 
 
 # ---------------------------------------------------------------------------
@@ -244,11 +244,13 @@ class GovernanceReport:
         return {
             "generated_at": self.generated_at,
             "total_topics": self.total_topics,
-            "topics": [t.to_dict() for t in self.topics],
+            "topics": [t.to_dict() for t in self.topics if isinstance(t, TopicState)],
         }
 
     def to_json(self) -> str:
-        return json.dumps(self.to_dict(), indent=2, ensure_ascii=False)
+        return json.dumps(
+            _json_safe(self.to_dict()), indent=2, ensure_ascii=False, default=json_default
+        )
 
 
 def build_governance_report(

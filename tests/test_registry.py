@@ -272,3 +272,64 @@ def test_bind_failure_raises():
     with pytest.raises(MockRegistryError):
         reg.start(port=1)  # port 1 is not bindable without privileges
     reg.stop()
+
+
+def test_mock_registry_tolerates_junk_fixture_and_set_fixture():
+    """A junk fixture argument (int, str, list, set, tuple, object, float,
+    None) to MockRegistry(...)/set_fixture is not a subjects mapping — it
+    must yield an empty backing store, not a raw AttributeError on .get()."""
+    junk = (42, 2.5, "x", [1, 2], {"s"}, (1, 2), object(), None)
+    for bad in junk:
+        reg = MockRegistry(fixture=bad)
+        assert reg.list_subjects() == []
+        reg.set_fixture(bad)
+        assert reg.list_subjects() == []
+        reg.stop()
+
+
+def test_mock_registry_tolerates_unhashable_subject_args():
+    """Unhashable subject args (list, dict, set) must not raise a raw
+    TypeError from setdefault/.get; they are coerced to stable string keys."""
+    reg = MockRegistry()
+    for bad in (["a"], {"k": 1}, {1, 2}):
+        reg.add_subject(bad, {"version": 1})
+        assert reg.versions(bad) == [1]
+        assert reg.version(bad) is not None
+        assert reg.compatibility_level(bad) == "BACKWARD"
+    assert set(reg.list_subjects()) == {"['a']", "{1, 2}", "{'k': 1}"}
+    # a plain str subject still works exactly as before
+    reg.add_subject("plain", {"version": 1})
+    assert reg.versions("plain") == [1]
+
+
+def test_registry_handler_reply_tolerates_junk_payloads():
+    """RegistryHandler._reply with a junk payload (bytes, sets, objects,
+    non-string dict keys) must still write a body, not die mid-response
+    (which the client would see as RemoteDisconnected)."""
+    import io
+
+    from kgov.mock_registry import RegistryHandler
+
+    captures = []
+
+    class CaptureHandler:
+        def __init__(self):
+            self.wfile = io.BytesIO()
+        def send_response(self, code):
+            captures.append(("response", code))
+        def send_header(self, k, v):
+            captures.append(("header", k, v))
+        def end_headers(self):
+            captures.append(("end",))
+
+    for payload in (42, "s", {"a": 1}, {"k": b"b"}, {1, 2}, object(), [b"x"],
+                    {"k": {"n": b"d"}}, None, (1, 2), {"k": 1, 2: "b"}, b"\xff"):
+        captures.clear()
+        h = CaptureHandler()
+        RegistryHandler._reply(h, 200, payload)  # must not raise
+        assert h.wfile.getvalue(), "a body must have been written"
+    # valid envelope unchanged
+    captures.clear()
+    h = CaptureHandler()
+    RegistryHandler._reply(h, 201, {"ok": [1, 2]})
+    assert h.wfile.getvalue() == b'{"ok": [1, 2]}'

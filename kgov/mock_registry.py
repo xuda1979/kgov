@@ -79,7 +79,13 @@ class RegistryHandler(BaseHTTPRequestHandler):
     # -- helpers ---------------------------------------------------------
 
     def _reply(self, code: int, payload: Any) -> None:
-        body = json.dumps(payload).encode("utf-8")
+        try:
+            body = json.dumps(payload).encode("utf-8")
+        except (TypeError, ValueError):
+            # junk payload shapes (bytes, sets, objects, non-string keys, ...)
+            # fire before any wfile io; fall back to a serializable envelope
+            # so the handler thread never dies mid-response
+            body = json.dumps(str(payload)).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Length", str(len(body)))
         for k, v in _JSON_HEADERS.items():
@@ -184,7 +190,7 @@ class MockRegistry:
 
     def __init__(self, fixture: dict | None = None):
         self._fixture: dict[str, list[dict]] = {}
-        if fixture:
+        if isinstance(fixture, dict):
             subjects = fixture.get("subjects", {})
             if isinstance(subjects, dict):
                 for name, versions in subjects.items():
@@ -244,13 +250,18 @@ class MockRegistry:
     def set_fixture(self, fixture: dict) -> None:
         """Swap the backing fixture (for multi-phase tests)."""
         self._fixture = {}
-        subjects = fixture.get("subjects", {})
-        if isinstance(subjects, dict):
-            for name, versions in subjects.items():
-                self._fixture[name] = _version_entries(versions)
+        if isinstance(fixture, dict):
+            subjects = fixture.get("subjects", {})
+            if isinstance(subjects, dict):
+                for name, versions in subjects.items():
+                    self._fixture[name] = _version_entries(versions)
 
-    def add_subject(self, subject: str, *versions: dict) -> None:
+    def add_subject(self, subject: Any, *versions: dict) -> None:
         """Append a subject (or extend an existing one) with one or more versions."""
+        if not isinstance(subject, str):
+            # unhashable subject arguments (lists, dicts, sets, ...) would
+            # crash setdefault with a raw TypeError; coerce to a stable key
+            subject = str(subject)
         existing = self._fixture.setdefault(subject, [])
         # route through the same dict-only filter as __init__/set_fixture —
         # junk non-dict entries would crash .get()/int() in the accessors
@@ -261,13 +272,17 @@ class MockRegistry:
         # of raising TypeError on the wire
         return sorted(self._fixture.keys(), key=str)
 
-    def versions(self, subject: str) -> Optional[list[int]]:
+    def versions(self, subject: Any) -> Optional[list[int]]:
+        if not isinstance(subject, str):
+            subject = str(subject)
         versions = self._fixture.get(subject)
         if versions is None:
             return None
         return sorted(_as_int(v.get("version"), i) for i, v in enumerate(versions, start=1))
 
-    def version(self, subject: str, version: Any = "latest") -> Optional[dict]:
+    def version(self, subject: Any, version: Any = "latest") -> Optional[dict]:
+        if not isinstance(subject, str):
+            subject = str(subject)
         versions = self._fixture.get(subject)
         if not versions:
             return None
@@ -298,6 +313,8 @@ class MockRegistry:
     def compatibility_level(self, subject: Optional[str]) -> Optional[str]:
         if subject is None:
             return "BACKWARD"
+        if not isinstance(subject, str):
+            subject = str(subject)
         versions = self._fixture.get(subject)
         if not versions:
             return None

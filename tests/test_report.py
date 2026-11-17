@@ -11,6 +11,7 @@ import pytest
 
 from kgov.report import (
     GovernanceReport,
+    TopicState,
     report_to_csv,
     build_governance_report,
     build_topic_state,
@@ -493,3 +494,38 @@ def test_junk_now_arg_falls_back_to_current_time():
         assert rep.topics[0].name == "payments"
         ts = build_topic_state({"name": "payments"}, {}, {}, {}, now=junk)
         assert ts.name == "payments"
+
+
+def test_governance_report_tolerates_junk_topics_entries():
+    """Junk entries in GovernanceReport.topics (a direct library caller or
+    test double constructing it by hand) are not TopicState rows — they must
+    be dropped from to_dict/to_json instead of raw-crashing on .to_dict()."""
+    for entry in (42, None, "x", object(), [1], {"a": 1}, (1, 2)):
+        rep = GovernanceReport(topics=[entry])
+        d = rep.to_dict()
+        assert d["topics"] == []
+        json.dumps(rep.to_json())  # to_json output is a JSON string; parse-proof
+    # empty report stays fine
+    rep = GovernanceReport()
+    json.loads(rep.to_json())
+
+
+def test_governance_report_to_json_tolerates_junk_topic_state_fields():
+    """A hand-constructed TopicState with junk field values (bytes, an
+    object, ...) must not crash to_json; unknown leaves stringify via the
+    json_default hook while valid output stays byte-identical on the
+    build_topic_state path."""
+    for junk in (
+        TopicState(name="t", tags=[b"x"]),
+        TopicState(name="t", schema_version=bytes(1)),
+        TopicState(name="t", schema_state=object()),
+    ):
+        rep = GovernanceReport(topics=[junk])
+        json.loads(rep.to_json())  # dumpable, no raw TypeError
+    # valid path unchanged (byte-identical output shape)
+    rep = build_governance_report(
+        topics_fixture=[{"name": "payments", "owner": "team"}], now=NOW,
+    )
+    out = json.loads(rep.to_json())
+    assert out["topics"][0]["tags"] == []
+    assert out["topics"][0]["owner"] == "team"
