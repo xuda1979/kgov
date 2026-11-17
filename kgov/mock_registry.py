@@ -97,7 +97,11 @@ class RegistryHandler(BaseHTTPRequestHandler):
         self._reply(code, {"error_code": error_code, "message": message})
 
     def _path_parts(self) -> list[str]:
-        path = unquote(urlparse(self.path).path)
+        # only a string request line can be parsed as a URL; junk values
+        # (ints, lists, dicts, ...) would raw-crash urlparse, and a missing
+        # path attribute means "no path" — both must not take the handler down
+        path = self.path if isinstance(self.path, str) else ""
+        path = unquote(urlparse(path).path)
         return [p for p in path.split("/") if p]
 
     def _subject_from_path(self) -> Optional[str]:
@@ -208,7 +212,10 @@ class MockRegistry:
         handler = type("BoundHandler", (RegistryHandler,), {"registry": self})
         try:
             self._server = ThreadingHTTPServer(("127.0.0.1", port), handler)
-        except OSError as exc:
+        except (OSError, OverflowError, TypeError, ValueError) as exc:
+            # junk ports (non-ints, out-of-range, non-tuples, ...) surface as
+            # raw TypeError/OverflowError from the socketserver bind; report
+            # them as a clean start failure like any other bind error
             raise MockRegistryError(f"mock registry failed to bind: {exc}") from exc
         self._bound_port = int(self._server.server_address[1])
         self._thread = threading.Thread(

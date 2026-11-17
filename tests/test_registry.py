@@ -274,6 +274,45 @@ def test_bind_failure_raises():
     reg.stop()
 
 
+def test_mock_registry_start_junk_ports_raise_clean_error():
+    """Junk port args (str, float, None, list, dict, bytes, tuple, set,
+    negative int) must raise a clean MockRegistryError from start(), not a
+    raw TypeError/OverflowError leaking out of the socketserver bind."""
+    for bad in ("abc", 1.5, None, ["a"], {"p": 1}, -1, b"x", (1, 2), {1, 2}):
+        reg = MockRegistry()
+        with pytest.raises(MockRegistryError):
+            reg.start(port=bad)
+        reg.stop()  # must be safe to stop a failed server
+
+
+def test_registry_handler_path_parts_tolerates_junk_paths():
+    """RegistryHandler._path_parts/_subject_from_path with a jail-broken
+    self.path (non-strings, missing, odd URL shapes, embedded NULs, junk
+    bytes) must not crash the handler thread — junk resolves to no path /
+    no subject, normal paths still resolve."""
+    from kgov.mock_registry import RegistryHandler
+
+    class FakeHandler(RegistryHandler):
+        def __init__(self, path):
+            self.path = path
+
+    # non-string / junk path values yield no parts and no subject
+    for bad in (42, None, ["a"], {"k": 1}, b"x", ("a", "b"), object(), 2.5, {1, 2}):
+        h = FakeHandler(bad)
+        assert RegistryHandler._path_parts(h) == []
+        assert RegistryHandler._subject_from_path(h) is None
+    # odd-but-string paths never crash; subject extraction stays correct
+    for odd in ("not-a-url", "//subjects/x", "http:///subjects/x",
+                "subjects/x/versions", "", "/", "\x00/subjects/x"):
+        parts = RegistryHandler._path_parts(FakeHandler(odd))
+        assert isinstance(parts, list)
+    h = FakeHandler("/subjects/payments-value/versions/1")
+    assert RegistryHandler._path_parts(h) == ["subjects", "payments-value", "versions", "1"]
+    assert RegistryHandler._subject_from_path(h) == "payments-value"
+    h = FakeHandler("/config/orders-value")
+    assert RegistryHandler._subject_from_path(h) == "orders-value"
+
+
 def test_mock_registry_tolerates_junk_fixture_and_set_fixture():
     """A junk fixture argument (int, str, list, set, tuple, object, float,
     None) to MockRegistry(...)/set_fixture is not a subjects mapping — it
