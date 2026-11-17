@@ -1095,10 +1095,20 @@ def test_cmd_topics_tolerates_junk_bootstrap_and_options(monkeypatch, capsys):
     bootstrap still reaches list_topics (stubbed offline, no hang)."""
     import argparse
 
+    from kgov.broker import _require_timeout
     from kgov.cli import CliError, cmd_topics
 
-    monkeypatch.setattr("kgov.broker.list_topics",
-                        lambda bootstrap, timeout=10.0: [])
+    calls: dict = {}
+
+    def fake_list_topics(bootstrap, timeout=10.0):
+        # Honor the real broker contract (list_topics calls _require_timeout
+        # first): junk timeouts must fail closed here too, so the truthful
+        # stub can't mask the wire guard behind a permissive pass-through.
+        _require_timeout(timeout)
+        calls["timeout"] = timeout
+        return []
+
+    monkeypatch.setattr("kgov.broker.list_topics", fake_list_topics)
 
     def ns(**kw):
         return argparse.Namespace(**kw)
@@ -1109,10 +1119,17 @@ def test_cmd_topics_tolerates_junk_bootstrap_and_options(monkeypatch, capsys):
     with pytest.raises(CliError):
         cmd_topics(ns())  # missing bootstrap attribute -> gate, not AttributeError
 
-    # Valid str bootstrap: no hang, no error, exit 0 (wire stubbed). A junk
-    # timeout is tolerated (passes through to list_topics, which coerces).
+    # Valid str bootstrap: no hang, no error, exit 0 (wire stubbed).
     assert cmd_topics(ns(bootstrap="127.0.0.1:9092")) == 0
-    assert cmd_topics(ns(bootstrap="127.0.0.1:9092", timeout="abc")) == 0
+    # Falsy timeouts coerce to the default; must reach the wire as 10.0.
+    assert calls["timeout"] == 10.0
+    # The --timeout value is wired through unchanged (7.5 -> list_topics 7.5).
+    assert cmd_topics(ns(bootstrap="127.0.0.1:9092", timeout=7.5)) == 0
+    assert calls["timeout"] == 7.5
+    # Truthy junk timeouts fail closed fast (real _require_timeout rejects).
+    for junk in ("abc", -1, True, float("nan"), float("inf")):
+        with pytest.raises(CliError):
+            cmd_topics(ns(bootstrap="127.0.0.1:9092", timeout=junk))
     # A truthy junk output value takes the force-write path and raises the
     # clean CliError (same design as cmd_check); falsy junk drops to stdout.
     with pytest.raises(CliError):
