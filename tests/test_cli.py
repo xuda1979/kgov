@@ -1105,3 +1105,34 @@ def test_version_flag_and_pyproject_consistency():
     field = re.search(r"^version\s*=\s*\"([^\"]+)\"", pyproject, re.MULTILINE)
     assert field, "pyproject.toml missing a version = \"...\" field"
     assert field.group(1) == __version__
+
+
+def test_main_interrupt_and_broken_pipe_exit_codes(monkeypatch):
+    """main() must translate Ctrl-C (KeyboardInterrupt) to 130 and a closed
+    stdout pipe (BrokenPipeError) to 0 — never a raw traceback. These are the
+    two documented exit paths (design doc: "KeyboardInterrupt（130）、
+    BrokenPipeError（0）") that no other test exercises: every handler above
+    wraps its failures in CliError (exit 3), so only an out-of-band signal
+    reaches these clauses."""
+    import argparse
+
+    class _Parser(argparse.ArgumentParser):
+        def parse_args(self, argv=None):
+            return argparse.Namespace(func=self._func)
+
+        def set_func(self, func):
+            self._func = func
+
+    def make_parser(func):
+        p = _Parser(prog="kgov")
+        p.set_func(func)
+        return p
+
+    monkeypatch.setattr("kgov.cli.build_parser", lambda: make_parser(
+        lambda args: (_ for _ in ()).throw(KeyboardInterrupt())))
+    assert main(["schema-diff"]) == 130
+
+    monkeypatch.setattr("kgov.cli.build_parser", lambda: make_parser(
+        lambda args: (_ for _ in ()).throw(BrokenPipeError())))
+    assert main(["schema-diff"]) == 0
+
