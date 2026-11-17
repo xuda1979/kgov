@@ -535,3 +535,42 @@ def test_registry_handler_do_get_fails_closed_without_registry():
         h = BareHandler(junk_path)
         h.do_GET()  # must not raise on junk paths either
         assert h.wfile.getvalue()
+
+
+def test_version_access_junk_arguments_fail_closed(server):
+    """Junk subject/version *argument* slots on the version-access methods of
+    a live client must fail closed through the designed RegistryError — never
+    a raw TypeError/AttributeError/ValueError from f-string path interpolation,
+    quote() of unhashable shapes, dict.get on junk, etc. Junk that happens to
+    match a live version (1, "1") still resolves normally."""
+    from kgov.registry import RegistryError as RE
+    client = server.client
+    juice = (None, 0, 1, -1, 3.14, float("inf"), float("nan"), True, False,
+             "", "abc", "1", b"", b"abc", b"\x00\x01", [], [1], [{}], {},
+             {"a": 1}, {"x": {"y": 2}}, set(), {1, 2}, (1, 2), (),
+             type(None), object())
+    # subject slot: every junk subject 404s through the designed RegistryError
+    for bad in juice:
+        with pytest.raises(RE):
+            client.get_versions(bad)
+    for bad in juice:
+        with pytest.raises(RE):
+            client.get_version(bad, 1)
+    for bad in juice:
+        with pytest.raises(RE):
+            client.get_latest(bad)
+    # version slot: unmatched junk fails closed the same way ...
+    for bad in (None, 0, -1, 3.14, float("inf"), float("nan"), True, False,
+                "", "abc", b"", b"abc", b"\x00\x01", [], [1], [{}], {},
+                {"a": 1}, {"x": {"y": 2}}, set(), {1, 2}, (1, 2), (),
+                type(None), object()):
+        with pytest.raises(RE):
+            client.get_version("payments-value", bad)
+    # ... while junk that matches a live version still resolves (no crash,
+    # correct payload) — the tolerant-design half of the contract
+    for bad in (1, "1"):
+        got = client.get_version("payments-value", bad)
+        assert got["version"] == 1
+        assert got["id"] == 1
+    # the designed path still resolves after all that junk
+    assert client.get_versions("payments-value") == [1, 2]
