@@ -682,6 +682,34 @@ def test_cmd_handlers_tolerate_junk_option_values():
                         output=None)) == 1
 
 
+def test_cmd_check_junk_broker_topic_raises_clierror():
+    """Truthy junk --broker/--topic values must raise a clean CliError at the
+    CLI boundary — before any lazy broker import or live AdminClient/Consumer
+    gets a junk bootstrap string. Without the gate, list/dict/bytes bootstrap
+    values reach a real confluent-kafka client and hang the scan (Fix 24's
+    hang class); junks must never leak past the boundary."""
+    import argparse
+
+    from kgov.cli import CliError, cmd_check
+
+    rules = str(FIXTURES / "rules" / "rules_scale.yaml")
+
+    def ns(**kw):
+        return argparse.Namespace(**kw)
+
+    # every junk broker value -> CliError, never a wire call
+    for junk in (None, "", 0, False, ["x"], {"a": 1}, 42, b"host", 3.5):
+        with pytest.raises(CliError):
+            cmd_check(ns(config=rules, messages=None, broker=junk, topic="t",
+                         max_violations=None, schema_registry=None, output=None))
+    # junk topic with a valid broker -> CliError (boundary gate, not the wire)
+    for junk in (None, "", 0, ["x"], {"a": 1}, b"t"):
+        with pytest.raises(CliError):
+            cmd_check(ns(config=rules, messages=None, broker="127.0.0.1:9092",
+                         topic=junk, max_violations=None, schema_registry=None,
+                         output=None))
+
+
 def test_cmd_check_junk_max_violations_fails_closed():
     """A junk max_violations value must not participate in the numeric gate
     comparison; a library caller passing junk gets a fail-closed gate

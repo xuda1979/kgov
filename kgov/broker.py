@@ -17,6 +17,7 @@ hex so the scan never aborts on an opaque payload.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -189,8 +190,34 @@ def _require_kafka() -> None:
         ) from exc
 
 
+def _require_bootstrap(bootstrap: Any) -> None:
+    """Reject junk bootstrap values before they ever reach a live client.
+
+    A truthy non-str bootstrap (list/dict/int/bytes/...) would be passed
+    straight into a real :class:`AdminClient`/`Consumer`, which bricks the
+    call on a live cluster (the hang class fixed for cmd_topics). Fail fast in
+    pure Python — before the confluent-kafka import — with a clean ValueError.
+    """
+    if not isinstance(bootstrap, str) or not bootstrap:
+        raise ValueError(f"bootstrap must be a non-empty str, got {bootstrap!r}")
+
+
+def _require_timeout(timeout: Any) -> None:
+    """Reject junk timeout values (non-numeric / non-positive / bool) before
+    they reach ``int(timeout * 1000)`` or a live client's timeout kwarg."""
+    if (
+        not isinstance(timeout, (int, float))
+        or isinstance(timeout, bool)
+        or not timeout > 0
+        or not math.isfinite(float(timeout))
+    ):
+        raise ValueError(f"timeout must be a positive number, got {timeout!r}")
+
+
 def list_topics(bootstrap: str, timeout: float = 10.0) -> list[dict]:
     """Return topic metadata: [{name, partitions, replication_factor, owner}]."""
+    _require_bootstrap(bootstrap)
+    _require_timeout(timeout)
     _require_kafka()
     from confluent_kafka.admin import AdminClient
 
@@ -232,6 +259,8 @@ def consumer_groups(bootstrap: str, timeout: float = 10.0) -> dict[str, dict]:
     ``last_consumed_at`` stays None and the report layer falls back to the
     producer-grace staleness rule.
     """
+    _require_bootstrap(bootstrap)
+    _require_timeout(timeout)
     _require_kafka()
     from confluent_kafka.admin import AdminClient
 
@@ -289,8 +318,16 @@ def read_topic(
     are never committed. If ``value_decoder`` is supplied it is consulted for
     values that are not valid JSON (e.g. an :class:`AvroRecordDecoder`).
     """
+    _require_bootstrap(bootstrap)
+    if not isinstance(topic, str) or not topic:
+        raise ValueError(f"topic must be a non-empty str, got {topic!r}")
+    _require_timeout(timeout)
+    if not isinstance(group_id, str) or not group_id:
+        raise ValueError(f"group_id must be a non-empty str, got {group_id!r}")
+    if n is not None and (not isinstance(n, int) or isinstance(n, bool) or n <= 0):
+        raise ValueError(f"n must be a positive int or None, got {n!r}")
     _require_kafka()
-    from confluent_kafka import KafkaError, KafkaException
+    from confluent_kafka import Consumer, KafkaError, KafkaException
 
     # Fail fast when the cluster is unreachable: a scan of a dead broker
     # yields no messages, which would otherwise pass a check gate vacuously.
@@ -346,6 +383,7 @@ def _probe_bootstrap(bootstrap: str, timeout: float) -> None:
     itself does not exist. A scan of a dead broker otherwise yields no
     messages and a ``check`` gate would pass vacuously.
     """
+    _require_bootstrap(bootstrap)
     from confluent_kafka.admin import AdminClient
 
     admin = AdminClient(

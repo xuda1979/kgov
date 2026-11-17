@@ -218,6 +218,14 @@ def _validate(rs, messages_path: Optional[str], broker_url: Optional[str], topic
             raise CliError(f"--messages file missing: {messages_path}")
         return validate_fixture_file(rs, messages_path)
     if broker_url or topic:
+        # Truthy junk broker/topic values (lists, dicts, ints, bytes) must be
+        # rejected here, before the lazy import and any live client: a junk
+        # bootstrap passed into read_topic would hit a real AdminClient /
+        # Consumer (hang class fixed in cmd_topics).
+        if not isinstance(broker_url, str) or not broker_url:
+            raise CliError(f"--broker must be <host:port>, got {broker_url!r}")
+        if not isinstance(topic, str) or not topic:
+            raise CliError(f"--topic must be a topic name, got {topic!r}")
         # Imported lazily: requires kgov[broker].
         from .broker import AvroRecordDecoder, read_topic  # type: ignore
         from .rules import Message, validate_message

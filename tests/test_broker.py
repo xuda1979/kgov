@@ -239,6 +239,89 @@ def test_broker_error_message():
 
 
 # ---------------------------------------------------------------------------
+# Junk-value gates (fire before any confluent-kafka import / network)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("value", [None, "", 0, False, [], ["x"], {}, {"a": 1}, 42, b"host", 3.5])
+def test_list_topics_junk_bootstrap_raises(value):
+    from kgov.broker import list_topics
+
+    with pytest.raises(ValueError, match="bootstrap"):
+        list_topics(value)
+
+
+@pytest.mark.parametrize("timeout", ["abc", None, 0, -1, True, float("nan"), float("inf")])
+def test_list_topics_junk_timeout_raises(timeout):
+    from kgov.broker import list_topics
+
+    with pytest.raises(ValueError, match="timeout"):
+        list_topics("127.0.0.1:9092", timeout=timeout)
+
+
+@pytest.mark.parametrize("value", [None, "", 0, False, [], ["x"], {}, {"a": 1}, 42, b"host", 3.5])
+def test_consumer_groups_junk_bootstrap_raises(value):
+    from kgov.broker import consumer_groups
+
+    with pytest.raises(ValueError, match="bootstrap"):
+        consumer_groups(value)
+
+
+def test_consumer_groups_junk_timeout_raises():
+    from kgov.broker import consumer_groups
+
+    with pytest.raises(ValueError, match="timeout"):
+        consumer_groups("127.0.0.1:9092", timeout="abc")
+
+
+@pytest.mark.parametrize("value", [None, "", 0, False, [], ["x"], {}, {"a": 1}, 42, b"host", 3.5])
+def test_read_topic_junk_bootstrap_raises(value):
+    from kgov.broker import read_topic
+
+    with pytest.raises(ValueError, match="bootstrap"):
+        read_topic(value, "payments")
+
+
+@pytest.mark.parametrize("value", [None, "", 0, [], ["t"], 42, b"t", {"x": 1}])
+def test_read_topic_junk_topic_raises(value):
+    from kgov.broker import read_topic
+
+    with pytest.raises(ValueError, match="topic"):
+        read_topic("127.0.0.1:9092", value)
+
+
+@pytest.mark.parametrize("timeout", ["abc", None, 0, -1, True, float("nan")])
+def test_read_topic_junk_timeout_raises(timeout):
+    from kgov.broker import read_topic
+
+    with pytest.raises(ValueError, match="timeout"):
+        read_topic("127.0.0.1:9092", "payments", timeout=timeout)
+
+
+@pytest.mark.parametrize("n", ["abc", 0, -1, True, 1.5, 3.0])
+def test_read_topic_junk_n_raises(n):
+    from kgov.broker import read_topic
+
+    with pytest.raises(ValueError, match="\\bn\\b"):
+        read_topic("127.0.0.1:9092", "payments", n=n)
+
+
+@pytest.mark.parametrize("group_id", [None, "", 42, b"g", [], {}])
+def test_read_topic_junk_group_id_raises(group_id):
+    from kgov.broker import read_topic
+
+    with pytest.raises(ValueError, match="group_id"):
+        read_topic("127.0.0.1:9092", "payments", group_id=group_id)
+
+
+def test_probe_bootstrap_junk_raises():
+    from kgov.broker import _probe_bootstrap
+
+    with pytest.raises(ValueError, match="bootstrap"):
+        _probe_bootstrap(42, 1.0)
+
+
+# ---------------------------------------------------------------------------
 # Connectivity probe
 # ---------------------------------------------------------------------------
 
