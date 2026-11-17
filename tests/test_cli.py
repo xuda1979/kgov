@@ -942,3 +942,33 @@ def test_cmd_topics_tolerates_junk_bootstrap_and_options(monkeypatch, capsys):
         cmd_topics(ns(bootstrap="127.0.0.1:9092", output=["x"]))
     assert cmd_topics(ns(bootstrap="127.0.0.1:9092", output=0)) == 0
     capsys.readouterr()
+
+
+def test_load_schema_text_tolerates_junk_refs_fail_closed():
+    """_load_schema_text (the schema-diff before/after ref loader) is the one
+    public cli helper Fixes 22-28 never probed. Every junk ref class must fold
+    into the clean CliError, never a raw TypeError (pathlib on non-str) or raw
+    ValueError (os.fspath/embedded-null-byte on NUL-str refs): non-str refs hit
+    the isinstance gate, NUL-byte refs either fall into the wrapped shorthand
+    branch (with exactly one colon) or the JSON-read handler (already
+    (OSError, ValueError) -> CliError)."""
+    from kgov.cli import CliError, _load_schema_text
+
+    before = FIXTURES / "schemas" / "breaking_before.json"
+
+    # Non-str refs: clean CliError gate, never a raw pathlib TypeError.
+    for junk in (None, 42, 3.5, b"x", ["x"], {"a": 1}, {"s"}, (1, 2)):
+        with pytest.raises(CliError):
+            _load_schema_text(junk, None)
+
+    # NUL-byte str refs: the one-colon shape reaches the wrapped shorthand
+    # branch (unpack failure -> CliError before any client/network); the
+    # no-colon shapes hit the JSON-read handler's (OSError, ValueError) guard.
+    for junk in ("\x00", "a\x00b", "x\x00:1"):
+        with pytest.raises(CliError):
+            _load_schema_text(junk, "avro")
+
+    # A valid file ref still loads its JSON and keeps the format hint.
+    text, fmt = _load_schema_text(str(before), "avro")
+    assert json.loads(text)
+    assert fmt == "avro"
