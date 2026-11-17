@@ -709,6 +709,42 @@ def test_registry_cli_unreachable(capsys) -> None:
     assert code == 3
 
 
+def test_registry_cli_junk_subject_exit_3(server, capsys) -> None:
+    """A junk-typed or unknown --subject must fail closed with a clean exit 3
+    CliError (the RegistryError from the 404 is wrapped, never a raw
+    TypeError/traceback), for every junk-typed CLI value."""
+    for junk in ("42", "no-such-subject", "@@bad@@", "['a']", "{'a': 1}", "b'sub'"):
+        code, _, err = _run("registry", "--registry-url", server.base_url,
+                            "--subject", junk)
+        assert code == 3, junk
+        assert "registry request failed" in err, junk
+        assert "Traceback" not in err, junk
+
+    # an empty --subject falls through to the falsy full-dump branch
+    code, out, _ = _run("registry", "--registry-url", server.base_url, "--subject", "")
+    assert code == 0
+    assert "subjects" in json.loads(out)
+
+
+def test_registry_cli_junk_timeout_exit_3(server, capsys) -> None:
+    """A float-parseable but invalid --timeout (-1, nan, inf) must not hang or
+    crash: the socket timeout error is funneled into RegistryError and wrapped
+    into a clean exit 3 CliError. A non-float --timeout is a usage error (2)."""
+    for junk in ("-1", "nan", "inf", "1e999"):
+        code, _, err = _run("registry", "--registry-url", server.base_url,
+                            "--timeout", junk)
+        assert code == 3, junk
+        assert "registry request failed" in err, junk
+        assert "Traceback" not in err, junk
+
+    code, out, _ = _run("registry", "--registry-url", server.base_url,
+                        "--timeout", "abc")
+    assert code == 2
+    code, out, _ = _run("registry", "--registry-url", server.base_url,
+                        "--timeout", "0")
+    assert code == 0
+
+
 # ---------------------------------------------------------------------------
 # junk argv / unreadable paths (CLI entry surface)
 # ---------------------------------------------------------------------------
