@@ -331,3 +331,99 @@ def test_nul_byte_path_raises_rules_config_error():
     ):
         with pytest.raises(RulesConfigError, match="cannot read"):
             call()
+
+
+def test_validate_message_tolerates_junk_fieldcheck_attrs():
+    """FieldCheck is a plain public dataclass — a direct library caller can
+    build a check whose enum/pattern/range/compiled_pattern attrs are junk
+    typed (an int enum, bytes pattern, a str range, non-numeric bounds)
+    bypassing the config loader. validate_message must skip those checks (or
+    the junk bounds) instead of raw-crashing on `not in`/`.match`/`.items()`/
+    raw < junk comparison."""
+    rs = RuleSet(fields={"f": FieldCheck(name="f")})
+    value = {"f": "x"}
+
+    def run(check, raw):
+        msg = Message(topic="t", partition=0, offset=0, key=b"k",
+                      value={"f": raw})
+        return validate_message(RuleSet(fields={"f": check}), msg)
+
+    # junk enum attrs (non-membership containers) — skipped, no crash
+    for enum in (5, "abc", {"a": 1}, None):
+        assert run(FieldCheck(name="f", enum=enum), "a") == []
+    # clean enum still validated
+    assert run(FieldCheck(name="f", enum=["a"]), "b")  # 1 violation
+    # junk compiled_pattern attrs — skipped, no crash
+    for pat in (b"a", 55, "a", None):
+        assert run(FieldCheck(name="f", compiled_pattern=pat), "a") == []
+    # clean compiled pattern still validated
+    assert run(FieldCheck(name="f", compiled_pattern=__import__("re").compile("^a$")), "b")
+    # junk range attrs / junk threshold values — skipped, no crash
+    for rng in ("abc", [1], None, {0: 1}, {"minimum": {1}}, {"minimum": "0"},
+                {"maximum": True}):
+        assert run(FieldCheck(name="f", range=rng), 3) == []
+    # numeric threshold (even inf) is a real bound — range check runs normally
+    assert run(FieldCheck(name="f", range={"minimum": float("inf")}), 3)  # 1 violation
+    # clean range still validated
+    assert run(FieldCheck(name="f", range={"maximum": 1}), 3)
+    # junk required/non_null/type attrs — never crash (falsy junk is
+    # disabled; truthy junk is enabled and only exercises the check)
+    assert run(FieldCheck(name="f", required="yes"), "x") == []
+    assert run(FieldCheck(name="f", required=[]), "x") == []
+    assert run(FieldCheck(name="f", non_null=[]), None) == []
+    run(FieldCheck(name="f", non_null=[1]), None)  # truthy junk fires — no crash
+    run(FieldCheck(name="f", type=b"string"), "x")  # truthy junk fires — no crash
+    run(FieldCheck(name="f", type=42), "x")  # truthy junk fires — no crash
+    assert run(FieldCheck(name="f", type=None), "x") == []  # no type = no check
+    # junk check names never crash lookup
+    assert run(FieldCheck(name="g"), "x") == []
+    assert run(FieldCheck(name=None), "x") == []
+
+
+def test_validate_message_tolerates_junk_raw_values():
+    """Junk raw values (sets, dicts, lists, NaN/inf, bytearray, memoryview,
+    huge ints, arbitrary objects) under clean checks must not crash the
+    enum-membership / pattern / range comparison paths."""
+    rs = _rs()
+    spec = {
+        "amount_cents": {"type": "integer", "non_null": True,
+                         "range": {"minimum": 0, "maximum": 100000}},
+        "currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
+        "status": {"type": "string", "enum": ["ACCEPTED", "PENDING", "REJECTED"]},
+        "payment_id": {"type": "string"},
+        "fee_cents": {"type": "integer", "non_null": True, "range": {"minimum": 0}},
+    }
+    rs = build_ruleset({"version": 1, "topic": "payments", "fields": spec})
+    junk_values = ({1, 2}, {"a": 1}, ["a"], float("nan"), float("inf"),
+                   b"x", bytearray(b"ab"), memoryview(b"ab"), 2**400,
+                   10**400, object(), None)
+    fields = ["amount_cents", "currency", "status", "payment_id", "fee_cents"]
+    for field in fields:
+        for raw in junk_values:
+            msg = Message(topic="payments", partition=0, offset=0, key=b"k",
+                          value={field: raw})
+            validate_message(rs, msg)  # must not raise
+
+
+def test_validate_message_junk_msg_attrs_no_traceback():
+    """Message partition/offset/key junk values (None, str, list, dict, float,
+    bytes, huge ints) must not crash validate_message or the resulting
+    Violation.to_dict serialization."""
+    rs = _rs()
+    spec = {
+        "amount_cents": {"type": "integer", "non_null": True,
+                         "range": {"minimum": 0, "maximum": 100000}},
+    }
+    rs = build_ruleset({"version": 1, "topic": "payments", "fields": spec})
+    for key in ("partition", "offset"):
+        for val in (None, "x", [], {}, 1.5, b"x", 2**400):
+            msg = Message(topic="payments", partition=0, offset=0, key=b"k",
+                          value={"amount_cents": -1})
+            setattr(msg, key, val)
+            for v in validate_message(rs, msg):
+                v.to_dict()  # must not raise
+    for val in (b"k", None, {"k": 1}, [1], 42, 1.5):
+        msg = Message(topic="payments", partition=0, offset=0, key=val,
+                      value={"amount_cents": -1})
+        for v in validate_message(rs, msg):
+            v.to_dict()  # must not raise

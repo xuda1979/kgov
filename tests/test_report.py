@@ -11,6 +11,7 @@ import pytest
 
 from kgov.report import (
     GovernanceReport,
+    StalenessSettings,
     TopicState,
     report_to_csv,
     build_governance_report,
@@ -529,3 +530,73 @@ def test_governance_report_to_json_tolerates_junk_topic_state_fields():
     out = json.loads(rep.to_json())
     assert out["topics"][0]["tags"] == []
     assert out["topics"][0]["owner"] == "team"
+
+
+def test_junk_grace_seconds_fall_back_to_non_stale():
+    """Hand-built StalenessSettings with junk-typed grace seconds (strings,
+    bytes, None, lists, dicts) must not crash the total_seconds comparison;
+    stale falls back to the non-stale default, and clean numeric settings keep
+    working unchanged (both consumer and producer branches)."""
+    t_no_consumer = {"name": "t", "latest_message_at": "2026-01-01T00:00:00Z"}
+    t_consumer = {"name": "t", "latest_message_at": "2026-01-01T00:00:00Z"}
+    groups_consumed = {"t": {"last_consumed_at": "2026-01-01T00:00:00Z"}}
+
+    # consumer branch: junk consumer_grace_seconds never crashes
+    # (non-numeric junk falls back to non-stale)
+    for gv in ("999", None, b"x", [5], {}):
+        st = StalenessSettings(consumer_grace_seconds=gv)
+        ts = build_topic_state(t_consumer, {}, groups_consumed, {}, now=NOW, settings=st)
+        assert ts.stale is False
+    # (numeric values are usable thresholds; only no-traceback is asserted)
+    for gv in (-5, float("inf"), float("nan"), 7.5):
+        st = StalenessSettings(consumer_grace_seconds=gv)
+        build_topic_state(t_consumer, {}, groups_consumed, {}, now=NOW, settings=st)
+    # producer branch: junk producer_grace_seconds never crashes
+    for pv in ("999", None, b"x", [5], {}):
+        st = StalenessSettings(producer_grace_seconds=pv)
+        ts = build_topic_state(t_no_consumer, {}, {}, {}, now=NOW, settings=st)
+        assert ts.stale is False
+    for pv in (-5, float("nan"), 7.5):
+        st = StalenessSettings(producer_grace_seconds=pv)
+        build_topic_state(t_no_consumer, {}, {}, {}, now=NOW, settings=st)
+    # a numeric inf producer grace is usable and makes nothing stale
+    st = StalenessSettings(producer_grace_seconds=float("inf"))
+    assert build_topic_state(t_no_consumer, {}, {}, {}, now=NOW, settings=st).stale is False
+    # clean numeric settings still drive staleness in both branches
+    st = StalenessSettings(consumer_grace_seconds=60)
+    assert build_topic_state(t_consumer, {}, groups_consumed, {}, now=NOW,
+                             settings=st).stale is True
+    st = StalenessSettings(producer_grace_seconds=60)
+    assert build_topic_state(t_no_consumer, {}, {}, {}, now=NOW,
+                             settings=st).stale is True
+
+
+def test_junk_rule_topic_violations_container_ignored():
+    """A junk-typed rule_topic_violations container (None, a str, bytes, a
+    list) passed directly to build_topic_state is not a {name: count} mapping
+    — it must be ignored (violation_count stays 0), not crash on .get()."""
+    topic = {"name": "t"}
+    for bad in (None, "x", b"x", [{"t"}], ["t"], {("t",): 2}, 42):
+        ts = build_topic_state(topic, {}, {}, bad)
+        assert ts.violation_count == 0
+    # a valid counts mapping still resolves
+    ts = build_topic_state(topic, {}, {}, {"t": 3})
+    assert ts.violation_count == 3
+
+
+def test_inf_partitions_and_replication_fall_back_to_defaults():
+    """float('inf') partitions/replication_factor must not leak a raw
+    OverflowError from int() (which the old TypeError/ValueError catch did not
+    cover); both fall back to the default instead."""
+    for p, r in ((float("inf"), 1), (1, float("inf")), (float("inf"), float("inf"))):
+        ts = build_topic_state({"name": "t", "partitions": p,
+                                "replication_factor": r}, {}, {}, {})
+        assert ts.partitions == 1
+        assert ts.replication_factor == 1
+    rep = build_governance_report(
+        topics_fixture=[{"name": "a", "partitions": float("inf"),
+                         "replication_factor": float("inf")}],
+        now=NOW,
+    )
+    assert rep.topics[0].partitions == 1
+    assert rep.topics[0].replication_factor == 1

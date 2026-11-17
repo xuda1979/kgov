@@ -330,17 +330,25 @@ def validate_message(rs: RuleSet, msg: Message) -> list[Violation]:
                     check="type", message=(
                         f"field '{check.name}' has type {_type_repr(raw)} "
                         f"but rule expects {check.type}")))
-        # enum
-        if check.enum is not None and raw is not None and raw not in check.enum:
+        # enum — junk-typed enum attrs (a bare int, ...) built by a direct
+        # library caller bypassing the config loader are not a membership
+        # container; skip the check rather than crash raw `not in`
+        if (check.enum is not None and raw is not None
+                and isinstance(check.enum, (list, tuple, set, frozenset))
+                and raw not in check.enum):
             result.append(Violation(
                 rule=rs.name, topic=msg.topic, partition=msg.partition,
                 offset=msg.offset, key=msg.key, field=check.name,
                 check="enum", message=(
                     f"field '{check.name}' value {raw!r} not in allowed enum "
                     f"{check.enum!r}")))
-        # pattern
+        # pattern — junk-typed compiled_pattern attrs (bytes, ints, ...) built
+        # by a direct library caller have no .match(); skip the check rather
+        # than crash raw AttributeError
         if check.compiled_pattern is not None and isinstance(raw, str):
-            if not check.compiled_pattern.match(raw):
+            if not callable(getattr(check.compiled_pattern, "match", None)):
+                pass
+            elif not check.compiled_pattern.match(raw):
                 result.append(Violation(
                     rule=rs.name, topic=msg.topic, partition=msg.partition,
                     offset=msg.offset, key=msg.key, field=check.name,
@@ -351,8 +359,15 @@ def validate_message(rs: RuleSet, msg: Message) -> list[Violation]:
         # Compare raw directly: ``float(raw)`` would overflow on integers
         # beyond the platform double range (OverflowError on e.g. 10**400),
         # while Python's int-vs-float comparison is exact and overflow-free.
-        if check.range is not None and isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        # A junk-typed range attr (a str, a list, ...) built by a direct
+        # library caller is not a {bound: threshold} mapping and junk
+        # thresholds ("0", {1}) are not numeric — skip those bounds instead
+        # of crashing raw on .items() / raw < threshold.
+        if (check.range is not None and isinstance(check.range, dict)
+                and isinstance(raw, (int, float)) and not isinstance(raw, bool)):
             for bound, threshold in check.range.items():
+                if not isinstance(threshold, (int, float)) or isinstance(threshold, bool):
+                    continue
                 if bound == "minimum" and raw < threshold:
                     result.append(Violation(
                         rule=rs.name, topic=msg.topic, partition=msg.partition,

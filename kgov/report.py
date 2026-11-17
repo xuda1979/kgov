@@ -158,7 +158,9 @@ def build_topic_state(
     def _to_int(value: Any, default: int) -> int:
         try:
             return int(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # out-of-range floats (inf, values beyond the platform double
+            # range) raise OverflowError from int(); treat as absent
             return default
 
     ts.partitions = _to_int(topic.get("partitions"), 1)
@@ -214,18 +216,32 @@ def build_topic_state(
     last_consumed = _parse_dt(group.get("last_consumed_at"))
     ts.last_consumed_at = last_consumed.isoformat() if last_consumed else None
 
-    # staleness
+    # staleness — junk-typed grace values (strings, bytes, None, lists, ...)
+    # in a hand-built StalenessSettings would raw-crash the total_seconds
+    # comparison; only numeric, non-bool grace values are usable thresholds
+    consumer_grace = settings.consumer_grace_seconds
+    producer_grace = settings.producer_grace_seconds
+    if not isinstance(consumer_grace, (int, float)) or isinstance(consumer_grace, bool):
+        consumer_grace = None
+    if not isinstance(producer_grace, (int, float)) or isinstance(producer_grace, bool):
+        producer_grace = None
+
     if group is not None and last_consumed is not None:
         consumed_delta = now - last_consumed
-        ts.stale = consumed_delta.total_seconds() > settings.consumer_grace_seconds
+        ts.stale = (consumer_grace is not None
+                    and consumed_delta.total_seconds() > consumer_grace)
     else:
         # No consumer group known for the topic.
         ts.stale = settings.no_consumer_since_epoch
         if not ts.stale and latest_msg is not None:
             produced_delta = now - latest_msg
-            ts.stale = produced_delta.total_seconds() > settings.producer_grace_seconds
+            ts.stale = (producer_grace is not None
+                        and produced_delta.total_seconds() > producer_grace)
 
-    ts.violation_count = int(rule_topic_violations.get(name, 0))
+    # a junk-typed violations container (None, a str, a list, ... passed
+    # directly) carries no per-topic counts — ignore it rather than crash .get
+    if isinstance(rule_topic_violations, dict):
+        ts.violation_count = _to_int(rule_topic_violations.get(name, 0), 0)
     return ts
 
 
