@@ -190,6 +190,7 @@ class RegistryHandler(BaseHTTPRequestHandler):
 
         if head == "mode":
             self._reply(200, {"mode": "READWRITE"})
+            return
 
         self._error(404, f"No endpoint for {self.path}", 40401)
 

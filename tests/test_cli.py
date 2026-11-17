@@ -745,6 +745,30 @@ def test_registry_cli_junk_timeout_exit_3(server, capsys) -> None:
     assert code == 0
 
 
+def test_registry_wire_mode_single_response(server) -> None:
+    """GET /mode must emit exactly one response (the intended 200). Before the
+    fall-through fix the /mode branch replied 200 and then kept routing into a
+    second 404 reply on the same connection — two stacked responses that
+    corrupt any keep-alive client stream. Read the raw socket bytes so the
+    second stacked 404 would be caught."""
+    import socket
+
+    port = int(server.base_url.rsplit(":", 1)[1])
+    s = socket.create_connection(("127.0.0.1", port), timeout=5)
+    try:
+        s.sendall(b"GET /mode HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n")
+        data = b""
+        while True:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+    finally:
+        s.close()
+    assert data.count(b"HTTP/1.0") == 1, data.decode("utf-8", "replace")
+    assert b"{\"mode\": \"READWRITE\"}" in data
+
+
 # ---------------------------------------------------------------------------
 # junk argv / unreadable paths (CLI entry surface)
 # ---------------------------------------------------------------------------
