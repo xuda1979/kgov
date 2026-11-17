@@ -210,6 +210,36 @@ def test_set_fixture_swap(server):
     assert client.list_subjects() == ["new-value"]
 
 
+def test_add_subject_live_wire_round_trip(server):
+    """add_subject mutations must reach a running server's wire: an appended
+    version on an existing subject, a brand-new subject, and junk version
+    entries dropped without corrupting what the client reads back."""
+    client = server.client
+    assert client.list_subjects() == ["orders-value", "payments-value"]
+
+    # append a version to an existing subject; it appears in the version list,
+    # resolves by explicit version and as latest
+    server.add_subject("payments-value", {"id": 30, "version": 9, "compatibility": "FORWARD", "schema": {"t": "new"}})
+    assert client.get_versions("payments-value") == [1, 2, 9]
+    v9 = client.get_version("payments-value", 9)
+    assert v9["id"] == 30 and v9["version"] == 9
+    assert v9["compatibility"] == "FORWARD"
+    assert v9["schema"] == {"t": "new"}
+    latest = client.get_latest("payments-value")
+    assert latest["id"] == 30
+    assert client.get_schema_by_id(30)["schema"] == {"t": "new"}
+
+    # a brand-new subject appears in the subject list and renders over the wire
+    server.add_subject("brand-new", {"id": 77, "version": 1, "schema": {"type": "record", "name": "B", "fields": []}})
+    assert client.list_subjects() == ["brand-new", "orders-value", "payments-value"]
+    assert client.get_version("brand-new")["id"] == 77
+
+    # junk version entries (bypassing the __init__/set_fixture filter) are
+    # dropped, leaving the version list exactly as before
+    server.add_subject("payments-value", 42, "junk", None, [1])
+    assert client.get_versions("payments-value") == [1, 2, 9]
+
+
 def test_unreachable_registry():
     client = SchemaRegistryClient("http://127.0.0.1:1")
     assert client.is_reachable() is False
