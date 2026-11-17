@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -44,9 +44,15 @@ def json_default(obj: Any) -> Any:
 
 
 def _json_safe(value: Any) -> Any:
-    """Recursively coerce non-JSON-safe values (bytes, bytearray, set, tuple)
-    into plain JSON-safe forms so ``to_dict()`` output can go straight to
-    ``json.dumps`` with no ``default=`` hook. Unchanged leaves stay as-is."""
+    """Recursively coerce non-JSON-safe values (bytes, bytearray, memoryview,
+    set, tuple) into plain JSON-safe forms so that ``to_dict()`` output can go
+    straight to ``json.dumps`` with no ``default=`` hook. Unchanged leaves
+    stay as-is."""
+    if isinstance(value, memoryview):
+        # memoryview is byte-like but not bytes/bytearray, so the byte path
+        # below would not see it; materialize the buffer into bytes so it is
+        # decoded (utf-8) or hexed like any other raw byte container
+        value = bytes(value)
     if isinstance(value, dict):
         # dict keys are NOT coerced by the recursion below; byte/tuple keys
         # would make json.dumps raw-crash ("keys must be str, int, float,
@@ -103,7 +109,12 @@ class DiffResult:
     message: str         # human readable explanation
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        # Build straight from declared fields instead of asdict(): asdict()
+        # deep-copies every value, and un-picklable leaves (memoryview, ...)
+        # raise raw TypeError from copy.deepcopy. Reading fields directly
+        # keeps junk leaves as-is so callers (json.dumps with default=, ...)
+        # can apply their own coercion.
+        return {f.name: getattr(self, f.name) for f in fields(self)}
 
 
 @dataclass
@@ -119,7 +130,11 @@ class SchemaDiffReport:
     generated_at: str = field(default_factory=now_utc_iso)
 
     def to_dict(self) -> dict:
-        d = asdict(self)
+        # build from declared fields instead of asdict(): asdict() deep-copies
+        # every value and un-picklable leaves (memoryview, ...) raise raw
+        # TypeError from copy.deepcopy before any coercion could run. Reading
+        # fields directly keeps junk leaves as-is for _json_safe below.
+        d = {f.name: getattr(self, f.name) for f in fields(self)}
         d["compatible"] = self.kind != CompatibilityKind.BREAKING
         # asdict() is raw: junk results entries (bytes, sets, non-string keys,
         # ...) would crash json.dumps on the export path. Coerce to JSON-safe

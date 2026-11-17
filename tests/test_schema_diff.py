@@ -587,3 +587,57 @@ def test_json_safe_coerces_junk_dict_keys():
     assert out["('tuple', 'key')"] == 4
     assert out["frozenset({5})"] == 6
     assert out["plain"]["nested"]["deep"] == 7
+
+
+def test_diff_result_to_dict_tolerates_unpicklable_leaves():
+    """DiffResult.to_dict must not deep-copy its values: memoryview leaves
+    (which copy.deepcopy cannot pickle) crash raw asdict() with
+    "cannot pickle memoryview objects" — build straight from fields instead
+    so callers can coerce."""
+    import json
+
+    from kgov.model import DiffResult, _json_safe
+
+    d = DiffResult(kind="Additive", path="f", message="added f").to_dict()
+    assert d == {"kind": "Additive", "path": "f", "message": "added f"}
+
+    # memoryview leaves survive to_dict (raised before the guard; no deepcopy)
+    for kw in ({"kind": memoryview(b"k")}, {"path": memoryview(b"p")},
+               {"message": memoryview(b"m")}):
+        out = DiffResult(kind=kw.get("kind", "K"), path=kw.get("path", "p"),
+                         message=kw.get("message", "m")).to_dict()
+        assert isinstance(out, dict)
+        # the coerced export must still be JSON-dumpable
+        assert json.dumps(_json_safe(out))
+
+
+def test_schema_diff_report_to_dict_tolerates_unpicklable_leaves():
+    """SchemaDiffReport.to_dict must not deep-copy its values either:
+    memoryview leaves on any field (or nested inside results) crash raw
+    asdict() before _json_safe could run — fixed in the Fix 39 guard."""
+    import json
+
+    from kgov.model import SchemaDiffReport, _json_safe
+
+    rep = SchemaDiffReport(format="avro", subject="s", before_version=1, after_version=2,
+                           before_id=1, after_id=2, kind="Additive",
+                           results=[{"kind": "Additive", "path": "f", "message": "added"}])
+    d = rep.to_dict()  # must not raise
+    assert d["before_version"] == 1
+    assert d["compatible"] is True
+    assert json.dumps(d["compatible"])
+
+    # memoryview leaves on any field / nested result entry survive to_dict —
+    # the export may call json.dumps with default=str to coerce them
+    for kw in ({"subject": memoryview(b"s")}, {"format": memoryview(b"a")},
+               {"kind": memoryview(b"k")}, {"generated_at": memoryview(b"g")},
+               {"before_version": memoryview(b"1")}, {"before_id": memoryview(b"1")},
+               {"after_id": memoryview(b"1")},
+               {"results": [{"kind": "Additive", "path": "f",
+                             "message": memoryview(b"m")}]}):
+        base = dict(format="avro", subject="s", before_version=1, after_version=2,
+                    results=[{"kind": "Additive", "path": "f", "message": "m"}])
+        base.update(kw)
+        out = SchemaDiffReport(**base).to_dict()
+        assert isinstance(out, dict) and out["compatible"] is True
+        assert json.dumps(_json_safe(out))
