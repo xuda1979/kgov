@@ -284,6 +284,13 @@ def test_registry_probes():
             _probe(genuine, "registry.get_latest.junk", c.get_latest, "s")
             _probe(genuine, "registry.is_reachable.junk", c.is_reachable)
             _probe(genuine, "registry.to_fixture_dict.junk", c.to_fixture_dict)
+    # junk token axis on __init__: any token value is stored verbatim in the
+    # Authorization header dict (no coercion), so construction and a fast-refused
+    # call must fail only through the designed RegistryError.
+    for t in JUICE:
+        ct = SchemaRegistryClient("http://127.0.0.1:1", token=t, timeout=0.1)
+        _probe(genuine, "registry.list_subjects.junk_token", ct.list_subjects)
+        _probe(genuine, "registry._get.junk_token", ct._get, "/subjects")
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 
@@ -438,6 +445,7 @@ def test_report_probes():
 
 def test_broker_probes():
     import kgov.broker as bk
+    from kgov.registry import SchemaRegistryClient
 
     genuine = {}
     for j in JUICE:
@@ -454,6 +462,21 @@ def test_broker_probes():
     rr = bk._RecordReader(object())
     for j in JUICE:
         _probe(genuine, "broker._RecordReader.read", rr.read, j)
+    # _reader_for is the current schema-id cache look-up: unhashable junk ids
+    # (list/dict/set) must fail through the designed ValueError, never leak the
+    # raw TypeError from the dict membership test; hashable junk ids route to
+    # get_schema_by_id on the fast-refused client (designed RegistryError).
+    dec_r = bk.AvroRecordDecoder(
+        SchemaRegistryClient("http://127.0.0.1:1", timeout=0.1))
+    for j in JUICE:
+        _probe(genuine, "broker._reader_for.junk_id", dec_r._reader_for, j)
+    # _default_decoder_factory with a junk reader must fail through the
+    # designed ValueError, never leak the raw AttributeError from .read; the
+    # public __call__ path already swallows factory exceptions to _UNDECODED.
+    for r in (None, 1, "x", [], {}, object()):
+        for _payload in (b"", b"\x00", None, 1, "x"):
+            _probe(genuine, "broker._default_decoder_factory.junk",
+                   bk._default_decoder_factory, r, _payload)
     # a junk decoder_factory is swallowed by AvroRecordDecoder.__call__ (the
     # factory invocation is wrapped) so public callers always get _UNDECODED;
     # junk factories must never crash __call__ itself before the wrap.
@@ -566,6 +589,11 @@ def test_mock_registry_probes():
     c_un = mr.MockRegistry().client
     _probe(genuine, "mr.client.unstarted_base", lambda: c_un.base_url)
     _probe(genuine, "mr.client.list_subjects.unstarted", c_un.list_subjects)
+    # __exit__ as a context-manager sink: junk args / unstarted server must
+    # never raise; it only delegates to the idempotent stop().
+    m_ex = mr.MockRegistry()
+    _probe(genuine, "mr.__exit__.unstarted", m_ex.__exit__, None, None, None)
+    _probe(genuine, "mr.__exit__.junk", m_ex.__exit__, 1, "x", [])
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 

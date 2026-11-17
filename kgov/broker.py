@@ -138,7 +138,17 @@ class AvroRecordDecoder:
             return _UNDECODED
 
     def _reader_for(self, schema_id: int) -> Optional["_RecordReader"]:
-        if schema_id not in self._schemas:
+        try:
+            cached = schema_id in self._schemas
+        except TypeError:
+            # unhashable junk ids (list/dict/set, ...) cannot take part in the
+            # cache membership test; fail through the designed ValueError
+            # contract instead of leaking the raw TypeError
+            raise ValueError(
+                f"invalid schema id: expected a hashable value, "
+                f"got {type(schema_id).__name__}"
+            ) from None
+        if not cached:
             info = self._client.get_schema_by_id(schema_id)
             parsed = info["schema"]
             if not isinstance(parsed, dict) or parsed.get("type") != "record":
@@ -190,6 +200,14 @@ class _RecordReader:
 
 
 def _default_decoder_factory(reader: "_RecordReader", payload: bytes) -> Any:
+    if not hasattr(reader, "read"):
+        # a junk reader (None/int/str/container/object, ...) cannot decode;
+        # fail through the designed ValueError contract instead of leaking a
+        # raw AttributeError from the attribute call below
+        raise ValueError(
+            f"invalid avro reader: expected an object exposing .read, "
+            f"got {type(reader).__name__}"
+        )
     return reader.read(payload)
 
 
