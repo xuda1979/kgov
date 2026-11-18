@@ -987,6 +987,56 @@ def test_cli_load_schema_text_shorthand_probes():
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 
+def test_cli_load_schema_text_url_probes():
+    """Full ``http://`` refs resolve through ``urllib.request.urlopen`` against
+    a live registry — the branch every short-hand pin strips away.  Junk wire
+    ``schema`` bodies (JSON-encoded on the wire), a missing schema key,
+    non-subjects routes and every junk ref shape must fold into a clean return
+    or the designed CliError; the urlopen round-trip may never leak a raw
+    exception out of _load_schema_text.
+    """
+    from kgov.cli import _load_schema_text
+    from kgov.mock_registry import MockRegistry
+
+    genuine = {}
+    for schema_value in (None, 42, ["a", "b", True],
+                         {"type": "record", "name": "R", "fields": []},
+                         "not-json", 3.14, b"bytes", {"schema": "inner"},
+                         [{"k": 1}], True):
+        with MockRegistry() as mk:
+            mk.set_fixture({"subjects": {"s": [
+                {"id": 1, "version": 1, "schema": schema_value}]}})
+            url = f"{mk.base_url}/subjects/s/versions/1"
+            for fmt in (None, "avro", "json", 1, b"avro", ["x"], {}):
+                _probe(genuine, "cli._load_schema_text.url",
+                       _load_schema_text, url, fmt)
+    # schema key absent wire-side -> json.dumps fallback on the fetched dict
+    with MockRegistry() as mk:
+        mk.set_fixture({"subjects": {"s": [{"id": 1, "version": 1}]}})
+        url = f"{mk.base_url}/subjects/s/versions/1"
+        _probe(genuine, "cli._load_schema_text.url_noschema",
+               _load_schema_text, url, None)
+    # unknown subject -> 404 -> urllib HTTPError -> designed CliError
+    with MockRegistry() as mk:
+        url = f"{mk.base_url}/subjects/nope/versions/1"
+        _probe(genuine, "cli._load_schema_text.url_missing",
+               _load_schema_text, url, None)
+    # non-subjects routes answer lists/scalars: not str, no "schema" key
+    for path in ("/subjects", "/"):
+        with MockRegistry() as mk:
+            mk.set_fixture({"subjects": {}})
+            url = f"{mk.base_url}{path}"
+            _probe(genuine,
+                   f"cli._load_schema_text.url_route.{path.replace('/', '_')}",
+                   _load_schema_text, url, None)
+    # junk ref shapes gate before any fetch or fail through fast-refused urls
+    for ref in JUICE + ["http://127.0.0.1:1/nope/1",
+                        "http://127.0.0.1:1/subjects/s/versions/1"]:
+        _probe(genuine, "cli._load_schema_text.url_junkref",
+               _load_schema_text, ref, None)
+    assert genuine == {}, f"genuine crashes escaped: {genuine}"
+
+
 def test_cli_live_wire_probes(tmp_path, monkeypatch):
     """The CLI command layer over a live MockRegistry must fail closed.
 
