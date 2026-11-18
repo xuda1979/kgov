@@ -412,6 +412,380 @@ def test_probe_bootstrap_reachable_ok(monkeypatch):
     broker._probe_bootstrap("127.0.0.1:9", timeout=1)  # must not raise
 
 
+# ---------------------------------------------------------------------------
+# Fake-client success bodies (the confluent-kafka join, no live broker)
+# ---------------------------------------------------------------------------
+
+
+def test_list_topics_client_error_wraps(monkeypatch):
+    """A client-side list_topics failure surfaces as the designed
+    BrokerConnectError (chained from the raw exception), ''[41]'' not a raw
+    confluent exception."""
+    from kgov import broker
+    from kgov.broker import BrokerConnectError
+
+    class FakeAdminClient:
+        def __init__(self, conf):
+            self.conf = conf
+
+        def list_topics(self, timeout: float = 10.0):
+            raise RuntimeError("Failed to get metadata: _TRANSPORT")
+
+    monkeypatch.setattr("confluent_kafka.admin.AdminClient", FakeAdminClient)
+    with pytest.raises(BrokerConnectError, match="cannot reach broker"):
+        broker.list_topics("127.0.0.1:9", timeout=1.0)
+
+
+def test_list_topics_metadata_mirror_and_error_skip(monkeypatch):
+    """list_topics success body mirrors client metadata into the documented
+    dict shape (sorted by name, error-carrying topics skipped, rf defaults to
+    0 when no partition carries replicas)."""
+    from kgov import broker
+
+    class TPart:
+        def __init__(self, replicas):
+            self.replicas = replicas
+
+    class TMeta:
+        def __init__(self, error, partitions):
+            self.error = error
+            self.partitions = partitions
+
+    md = {
+        "ok": TMeta(None, {0: TPart(["r1", "r2"]), 1: TPart(None)}),
+        "no_rep": TMeta(None, {}),
+        "bad": TMeta(object(), {0: TPart(["r1"])}),
+    }
+    seen = {}
+
+    class FakeAdminClient:
+        def __init__(self, conf):
+            seen["conf"] = conf
+
+        def list_topics(self, timeout: float = 10.0):
+            seen["timeout"] = timeout
+            return type("MD", (), {"topics": md})()
+
+    monkeypatch.setattr("confluent_kafka.admin.AdminClient", FakeAdminClient)
+    out = broker.list_topics("127.0.0.1:9", timeout=3.0)
+
+    assert [t["name"] for t in out] == ["no_rep", "ok"]  # "bad": error-skipped
+    ok = next(t for t in out if t["name"] == "ok")
+    assert ok["partitions"] == 2 and ok["replication_factor"] == 2
+    nr = next(t for t in out if t["name"] == "no_rep")
+    assert nr["partitions"] == 0 and nr["replication_factor"] == 0
+    assert seen["conf"]["bootstrap.servers"] == "127.0.0.1:9"
+    assert seen["timeout"] == 3.0
+    assert set(ok) == {
+        "name",
+        "partitions",
+        "replication_factor",
+        "owner",
+        "tags",
+        "latest_message_at",
+    }
+
+
+def test_consumer_groups_member_merging(monkeypatch):
+    """consumer_groups success body describes only STABLE/EMPTY groups and
+    aggregates member assignments per topic; broken member assignment lists
+    degrade to [] instead of aborting the scan."""
+    from kgov import broker
+
+    class TPart:
+        def __init__(self, topic):
+            self.topic = topic
+
+    class Member:
+        def __init__(self, assignment, broken=False):
+            self._assignment = assignment
+            self._broken = broken
+
+        @property
+        def assignment(self):
+            if self._broken:
+                raise RuntimeError("no assignment")
+            return self._assignment
+
+    class Desc:
+        def __init__(self, group_id, members):
+            self.group_id = group_id
+            self.members = members
+
+    class Group:
+        def __init__(self, group_id, state):
+            self.group_id = group_id
+            self.state = state
+
+    described = []
+
+    class FakeAdminClient:
+        def __init__(self, conf):
+            self.conf = conf
+
+        def list_consumer_groups(self, timeout: float = 10.0):
+            return [
+                Group("g1", "STABLE"),
+                Group("g2", "EMPTY"),
+                Group("g3", "DEAD"),
+            ]
+
+        def describe_consumer_groups(self, ids, timeout: float = 10.0):
+            described.extend(ids)
+            return [
+                Desc(
+                    "g1",
+                    [
+                        Member([TPart("t1"), TPart("t2")]),
+                        Member([TPart("t1")]),
+                    ],
+                ),
+                Desc("g2", [Member(None, broken=True)]),
+            ]
+
+    monkeypatch.setattr("confluent_kafka.admin.AdminClient", FakeAdminClient)
+    out = broker.consumer_groups("127.0.0.1:9", timeout=2.0)
+
+    assert sorted(described) == ["g1", "g2"]  # DEAD g3 filtered out
+    assert set(out) == {"t1", "t2"}
+    assert out["t1"] == {"group": "g1", "consumer_count": 2, "last_consumed_at": None}
+    assert out["t2"] == {"group": "g1", "consumer_count": 2, "last_consumed_at": None}
+
+
+def test_consumer_groups_fail_closed_paths(monkeypatch):
+    """consumer_groups degradation paths each degrade to {}:
+    list failure, no STABLE/EMPTY groups, and describe failure."""
+    from kgov import broker
+
+    class Group:
+        def __init__(self, group_id, state):
+            self.group_id = group_id
+            self.state = state
+
+    mode = "list_raises"
+    groups = []
+
+    class FakeAdminClient:
+        def __init__(self, conf):
+            self.conf = conf
+
+        def list_consumer_groups(self, timeout: float = 10.0):
+            if mode == "list_raises":
+                raise RuntimeError("no metadata")
+            return groups
+
+        def describe_consumer_groups(self, ids, timeout: float = 10.0):
+            raise RuntimeError("no describe")
+
+    for mode in ("list_raises", "no_valid", "describe_raises"):
+        groups = [Group("g1", "DEAD" if mode == "no_valid" else "STABLE")]
+        monkeypatch.setattr("confluent_kafka.admin.AdminClient", FakeAdminClient)
+        assert broker.consumer_groups("127.0.0.1:9", timeout=1.0) == {}
+
+
+def test_read_topic_poll_success(monkeypatch):
+    """read_topic success body pulls messages until n is reached, decoding
+    JSON values and hex keys, and always closes the consumer."""
+    from kgov import broker
+    from confluent_kafka import KafkaError
+
+    class Msg:
+        def __init__(self, key=None, value=None, error=None, timestamp=None,
+                     headers=None, topic="payments", partition=0, offset=0):
+            self._key = key
+            self._value = value
+            self._err = error
+            self._ts = timestamp
+            self._headers = headers or []
+            self._topic = topic
+            self._part = partition
+            self._off = offset
+
+        def error(self):
+            return self._err
+
+        def timestamp(self):
+            return self._ts
+
+        def topic(self):
+            return self._topic
+
+        def partition(self):
+            return self._part
+
+        def offset(self):
+            return self._off
+
+        def key(self):
+            return self._key
+
+        def value(self):
+            return self._value
+
+        def headers(self):
+            return self._headers
+
+    queue = [
+        None,  # poll returning None -> continue
+        Msg(error=KafkaError(KafkaError._PARTITION_EOF)),  # EOF -> continue
+        Msg(key=b"k1", value=b'{"amount_cents": 100}',
+            timestamp=(1, 1234567), headers=[("h1", b"v1")],
+            topic="payments", partition=0, offset=41),
+        Msg(key=b"\xff\xfe", value=b"plain", topic="payments",
+            partition=1, offset=42),
+    ] + [None] * 100  # exhausted queue must not hang: n-limit breaks first
+    closed = []
+    confs = []
+
+    class FakeAdminClient:
+        def __init__(self, conf):
+            self.conf = conf
+
+        def list_topics(self, timeout: float = 10.0):
+            return type("MD", (), {"topics": {}})()
+
+    class FakeConsumer:
+        def __init__(self, conf):
+            confs.append(conf)
+
+        def subscribe(self, topics):
+            self.topics = topics
+
+        def poll(self, timeout: float = 5.0):
+            return queue.pop(0) if queue else None
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr("confluent_kafka.admin.AdminClient", FakeAdminClient)
+    monkeypatch.setattr("confluent_kafka.Consumer", FakeConsumer)
+    monkeypatch.setattr(broker, "_now_ms", lambda: 1000.0)  # deadline stays ahead
+
+    out = broker.read_topic("127.0.0.1:9", "payments", n=2, timeout=1.0)
+
+    assert closed  # finally closed the consumer
+    assert confs[0]["bootstrap.servers"] == "127.0.0.1:9"
+    assert confs[0]["group.id"].startswith("kgov-scan-")
+    assert confs[0]["auto.offset.reset"] == "earliest"
+    assert confs[0]["enable.auto.commit"] is False
+    assert len(out) == 2
+    assert out[0].topic == "payments" and out[0].partition == 0 and out[0].offset == 41
+    assert out[0].key == "k1" and out[0].value == {"amount_cents": 100}
+    assert out[0].timestamp_ms == 1234567 and out[0].headers == {"h1": b"v1"}
+    assert out[1].key == {"$bytes": "fffe"} and out[1].value == "plain"
+
+
+def test_read_topic_transport_error_raises(monkeypatch):
+    """A live _TRANSPORT poll error raises KafkaException (the designed wrap),
+    and the consumer still closes via finally."""
+    from kgov import broker
+    from confluent_kafka import KafkaError, KafkaException
+
+    class Msg:
+        def error(self):
+            return KafkaError(KafkaError._TRANSPORT)
+
+    queue = [Msg()]
+    closed = []
+
+    class FakeAdminClient:
+        def __init__(self, conf):
+            self.conf = conf
+
+        def list_topics(self, timeout: float = 10.0):
+            return type("MD", (), {"topics": {}})()
+
+    class FakeConsumer:
+        def __init__(self, conf):
+            self.conf = conf
+
+        def subscribe(self, topics):
+            self.topics = topics
+
+        def poll(self, timeout: float = 5.0):
+            return queue.pop(0) if queue else None
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr("confluent_kafka.admin.AdminClient", FakeAdminClient)
+    monkeypatch.setattr("confluent_kafka.Consumer", FakeConsumer)
+    monkeypatch.setattr(broker, "_now_ms", lambda: 1000.0)
+
+    with pytest.raises(KafkaException):
+        broker.read_topic("127.0.0.1:9", "payments", n=1, timeout=1.0)
+    assert closed
+
+
+def test_read_topic_other_error_skips_message(monkeypatch):
+    """A poll error that is neither EOF nor TRANSPORT is skipped (continue)
+    rather than aborting the scan."""
+    from kgov import broker
+    from confluent_kafka import KafkaError
+
+    class Msg:
+        def __init__(self, error=None, key=None, value=None):
+            self._err = error
+            self._key = key
+            self._value = value
+
+        def error(self):
+            return self._err
+
+        def timestamp(self):
+            return (1, 1000)
+
+        def topic(self):
+            return "payments"
+
+        def partition(self):
+            return 0
+
+        def offset(self):
+            return 0
+
+        def key(self):
+            return self._key
+
+        def value(self):
+            return self._value
+
+        def headers(self):
+            return []
+
+    # first message carries an unrelated error code (skipped), then a good one.
+    queue = [Msg(error=KafkaError(KafkaError._MSG_TIMED_OUT)), Msg(value=b"1")]
+    closed = []
+
+    class FakeAdminClient:
+        def __init__(self, conf):
+            self.conf = conf
+
+        def list_topics(self, timeout: float = 10.0):
+            return type("MD", (), {"topics": {}})()
+
+    class FakeConsumer:
+        def __init__(self, conf):
+            self.conf = conf
+
+        def subscribe(self, topics):
+            self.topics = topics
+
+        def poll(self, timeout: float = 5.0):
+            return queue.pop(0) if queue else None
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr("confluent_kafka.admin.AdminClient", FakeAdminClient)
+    monkeypatch.setattr("confluent_kafka.Consumer", FakeConsumer)
+    monkeypatch.setattr(broker, "_now_ms", lambda: 1000.0)
+
+    out = broker.read_topic("127.0.0.1:9", "payments", n=1, timeout=1.0)
+    assert len(out) == 1 and out[0].value == 1  # decoded JSON "1"; skipped error msg
+    assert closed
+
+
 @pytest.mark.skipif(
     not os.environ.get("KGOV_LIVE_BROKER"),
     reason="set KGOV_LIVE_BROKER=host:port to run live broker integration",
