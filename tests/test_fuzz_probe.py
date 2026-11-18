@@ -656,6 +656,66 @@ def test_broker_probes():
     for j in JUICE:
         _probe(genuine, "broker._probe_bootstrap.junk",
                bk._probe_bootstrap, j, j)
+    # The battery above probes _reader_for only with a fast-refused client, so
+    # the join of live get_schema_by_id -> parsed record schema -> _RecordReader
+    # decode is never exercised.  Drive it here over a live MockRegistry with a
+    # genuine Confluent-wire payload: a record schema (id 1), a non-record
+    # schema (id 2), and a record-shaped schema the avro library cannot parse
+    # (id 3) whose SchemaParseException used to leak from _reader_for.  Junk
+    # payloads/ids must all fail closed as designed (RegistryError/ValueError)
+    # or decode to _UNDECODED, never raise a third-party avro error.
+    import io
+    import json
+    import struct
+
+    import avro.io as avro_io
+    import avro.schema as avro_schema
+    from kgov.mock_registry import MockRegistry
+    from kgov.registry import SchemaRegistryClient
+
+    schema = {"type": "record", "name": "R", "fields": [
+        {"name": "a", "type": "string"},
+        {"name": "b", "type": ["null", "int"]},
+    ]}
+    with MockRegistry() as mk:
+        mk.add_subject("s",
+                       {"id": 1, "version": 1, "schema": schema},
+                       {"id": 2, "version": 2, "schema": {"type": "string"}},
+                       {"id": 3, "version": 3,
+                        "schema": {"type": "record", "name": "R2",
+                                   "fields": [{"name": "x",
+                                               "type": "bogus"}]}})
+        dec = bk.AvroRecordDecoder(SchemaRegistryClient(mk.base_url, timeout=5))
+
+        def _wire(schema_id, datum):
+            buf = io.BytesIO()
+            avro_io.DatumWriter(avro_schema.parse(json.dumps(schema))).write(
+                datum, avro_io.BinaryEncoder(buf))
+            return bk.CONFLUENT_MAGIC + struct.pack(">I", schema_id) + \
+                buf.getvalue()
+
+        good = _wire(1, {"a": "hi", "b": 7})
+        _probe(genuine, "broker.AvroRecordDecoder.live_wire.good", dec, good)
+        # junk payloads reach the wire parse for len>=5 magic bytes: junk ids
+        # must fail through RegistryError, the bogus id-3 schema as _UNDECODED
+        # (its Wire-shape is only magic+id bytes, since the datum is never
+        # parsed once the record schema fails to parse).
+        for p in JUICE + [b"\x00" * 6, b"\x00\x00\x00\x00\x01junk",
+                          b"\x00\x00\x00\x00\x02junk", b"\x00\x00\x00\x00\x03junk",
+                          b"\x00\x00\x00\x00\xffab", good + b"trailing",
+                          b"\x00\x00\x00\x00\x00\x00"]:
+            _probe(genuine, "broker.AvroRecordDecoder.live_wire.junk", dec, p)
+        # live _reader_for: registered ids build a reader, missing/junk ids
+        # fail through the client's designed RegistryError.
+        _probe(genuine, "broker._reader_for.live_wire", dec._reader_for, 1)
+        rr = dec._reader_for(1)
+        for sid in JUICE + [0, 2, 3, 4, 99, "1", 1.0, -0.0]:
+            _probe(genuine, "broker._reader_for.live_wire.junk",
+                   dec._reader_for, sid)
+        # live _RecordReader.read: the genuine schema decodes a payload,
+        # junk payloads fail through the designed ValueError.
+        for p in JUICE + [b"", b"\x01", b"\x02" + good, good]:
+            _probe(genuine, "broker._RecordReader.read.live_wire", rr.read, p)
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 

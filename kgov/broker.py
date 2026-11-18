@@ -162,7 +162,16 @@ class AvroRecordDecoder:
 
         from avro import schema as avro_schema
 
-        return _RecordReader(avro_schema.parse(_json.dumps(parsed, ensure_ascii=False)))
+        try:
+            parsed_schema = avro_schema.parse(_json.dumps(parsed, ensure_ascii=False))
+        except Exception:
+            # a record-shaped schema the avro library cannot parse (junk field
+            # types, malformed structure, ...) must fail closed as "not
+            # decodable" instead of leaking the third-party parse error; cache
+            # it so the error is not re-raised on every payload with this id
+            self._schemas[schema_id] = None
+            return None
+        return _RecordReader(parsed_schema)
 
 
 class _RecordReader:
