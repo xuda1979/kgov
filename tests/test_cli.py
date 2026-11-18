@@ -586,6 +586,132 @@ def test_check_broker_scan_success_path(tmp_path, capsys, monkeypatch):
     assert "ok=False violations=2 gate=1 -> FAIL" in capsys.readouterr().err
 
 
+def _payment_v1_schema() -> dict:
+    """The payments-value schema registered as id 1 in the registry fixture."""
+    return {
+        "type": "record",
+        "name": "Payment",
+        "namespace": "com.acme",
+        "fields": [
+            {"name": "payment_id", "type": "string"},
+            {"name": "amount_cents", "type": "long"},
+            {"name": "currency", "type": "string"},
+            {"name": "status", "type": "string"},
+        ],
+    }
+
+
+def _confluent_wire(schema_id: int, record: dict, avro_schema: dict) -> bytes:
+    """Confluent wire format: 0x00 magic + 4-byte big-endian schema id + datum."""
+    import io
+    import json
+
+    from avro import io as avro_io
+    from avro import schema as avro_schema_mod
+
+    parsed = avro_schema_mod.parse(json.dumps(avro_schema))
+    buf = io.BytesIO()
+    writer = avro_io.DatumWriter(parsed)
+    writer.write(record, avro_io.BinaryEncoder(buf))
+    return b"\x00" + schema_id.to_bytes(4, byteorder="big") + buf.getvalue()
+
+
+def test_check_broker_schema_registry_decodes_wire_avro(
+    registry_server, tmp_path, capsys, monkeypatch
+):
+    """README.md:98-100 documents --schema-registry: wire messages in
+    Confluent-wire Avro (0x00 magic + schema id + binary datum) are decoded
+    against the registry before rules run, and decode failure / non-Avro
+    values fall back to raw text / hex *without* interrupting the scan.
+    test_check_broker_scan_success_path pins the broker route through main()
+    with AvroRecordDecoder stubbed out and test_broker pins the decoder at
+    library level, but no test drives genuine Avro wire bytes all the way
+    through main() with the real decoder wired in. Here only read_topic is
+    stubbed (a double applying the real _decode_value, as the live consumer
+    path does) so cli._validate's genuine AvroRecordDecoder(SchemaRegistryClient)
+    decodes against the live MockRegistry."""
+    from datetime import datetime
+
+    from kgov import broker as broker_mod
+    from kgov.broker import BrokerMessage
+
+    rules = str(FIXTURES / "rules" / "rules_scale.yaml")
+    schema = _payment_v1_schema()
+    raws: list[tuple] = []
+    seen: list = []
+
+    def fake_read_topic(bootstrap, topic, value_decoder=None, **kw):
+        decoded = []
+        msgs = []
+        for partition, offset, key, raw in raws:
+            value = broker_mod._decode_value(raw, value_decoder)
+            decoded.append(value)
+            msgs.append(BrokerMessage(topic=topic, partition=partition,
+                                      offset=offset, key=key, value=value))
+        seen[:] = decoded
+        return msgs
+
+    monkeypatch.setattr("kgov.broker.read_topic", fake_read_topic)
+    out = tmp_path / "result.json"
+    url = registry_server.base_url
+    argv = lambda: ["check", "--config", rules,  # noqa: E731
+                    "--broker", "127.0.0.1:9092", "--topic", "payments",
+                    "--schema-registry", url, "-o", str(out)]
+
+    # (1) clean Avro record decodes to a dict through main() -> gate passes
+    raws[:] = [(0, 0, "pay_009", _confluent_wire(
+        1, {"payment_id": "pay_009", "amount_cents": 2500,
+            "currency": "USD", "status": "ACCEPTED"}, schema))]
+    code = main(argv())
+    assert code == 0
+    assert seen == [{"payment_id": "pay_009", "amount_cents": 2500,
+                     "currency": "USD", "status": "ACCEPTED"}]
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert set(data) == {"ok", "gate", "violation_count", "rule", "topic",
+                         "violations", "generated_at"}
+    assert data["ok"] is True and data["gate"] == 0
+    assert data["violation_count"] == 0
+    assert data["rule"] == "payments-constraints" and data["topic"] == "payments"
+    assert data["violations"] == []
+    parsed = datetime.fromisoformat(data["generated_at"])
+    assert parsed.tzinfo is not None and parsed.utcoffset().total_seconds() == 0
+    assert "ok=True violations=0 gate=0 -> PASS" in capsys.readouterr().err
+
+    # (2) violating Avro record: gate fails, violations carry the wire position
+    raws[:] = [(3, 7, "pay_008", _confluent_wire(
+        1, {"payment_id": "pay_008", "amount_cents": -5,
+            "currency": "usd", "status": "PENDING"}, schema))]
+    code = main(argv())
+    assert code == 1
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["ok"] is False and data["gate"] == 0
+    assert data["violation_count"] == 2
+    assert sorted(v["field"] for v in data["violations"]) == ["amount_cents", "currency"]
+    assert sorted(v["check"] for v in data["violations"]) == ["pattern", "range"]
+    assert all(v["partition"] == 3 and v["offset"] == 7 and v["key"] == "pay_008"
+               for v in data["violations"])
+    assert "ok=False violations=2 gate=0 -> FAIL" in capsys.readouterr().err
+
+    # (3) unregistered schema id: registry fetch fails -> raw-text fallback,
+    # the scan is NOT interrupted, and the gate is judged on the fallback
+    raws[:] = [(1, 2, "pay_x", b"\x00\x00\x00\x27\x0f" + b"garbage-datum")]
+    code = main(argv())
+    assert code == 1
+    assert seen == ["\x00\x00\x00'\x0fgarbage-datum"]
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["violation_count"] == 3
+    assert sorted(v["field"] for v in data["violations"]) == [
+        "amount_cents", "currency", "payment_id"]
+
+    # (4) non-UTF-8 non-Avro bytes: hex fallback, scan still completes
+    raws[:] = [(0, 9, "pay_y", b"\xff\xfe\x01")]
+    code = main(argv())
+    assert code == 1
+    assert seen == [{"$bytes": "fffe01"}]
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["violation_count"] == 3
+
+
 # ---------------------------------------------------------------------------
 # report
 # ---------------------------------------------------------------------------
