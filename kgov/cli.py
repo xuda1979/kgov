@@ -72,6 +72,11 @@ def _utf8_safe(text: str) -> str:
     fails soft so exports still flow, matching the junk-text str() rendering
     below instead of the raw-crash contract.
     """
+    if not isinstance(text, str):
+        # junk text (None, ints, bytes, containers, ...) from a direct library
+        # caller would raw-crash .encode() with a bare AttributeError; render
+        # it via str() to match the module's junk-text coercion contract
+        return str(text)
     return text.encode("utf-8", errors="replace").decode("utf-8")
 
 

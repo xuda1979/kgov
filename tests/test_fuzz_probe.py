@@ -735,7 +735,7 @@ def test_cli_probes(cmd_name, tmp_path, monkeypatch):
 def test_cli_internals_probes(tmp_path, monkeypatch):
     """Internal cli helpers (never directly fuzzed by the cmd-handler battery)
     must fail closed on junk: _write_out (both stdout and file-write branches),
-    _load_json_or_exit, _load_schema_text, _require_export_format.
+    _load_json_or_exit, _utf8_safe, _load_schema_text, _require_export_format.
 
     The working directory is moved to tmp_path so that truthy-string path
     values in JUICE ("1", "abc") that legitimately pass the ``if path:`` gate
@@ -752,6 +752,7 @@ def test_cli_internals_probes(tmp_path, monkeypatch):
         _probe(genuine, "cli._write_out.truthy_path_junk_text",
                c._write_out, out, j)
         _probe(genuine, "cli._load_json_or_exit", c._load_json_or_exit, j)
+        _probe(genuine, "cli._utf8_safe", c._utf8_safe, j)
         _probe(genuine, "cli._load_schema_text", c._load_schema_text, j, None)
         _probe(genuine, "cli._load_schema_text.fmt",
                c._load_schema_text, "{}", j)
