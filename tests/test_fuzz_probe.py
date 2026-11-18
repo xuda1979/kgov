@@ -357,6 +357,14 @@ def test_registry_live_wire_junk_axis_probes():
                    c.get_versions, s)
             _probe(genuine, "registry.get_latest.live_wire",
                    c.get_latest, s)
+        # junk schema ids on the live wire: int() gating happens client-side
+        # and the /schemas/ids/{id} route re-gates handler-side; every junk id
+        # must exit as the designed RegistryError (or a valid dict for the
+        # coercible ids present in the mock).
+        for sid in JUICE + ["1", b"1", 1.0, 0.0, 999, "999", 1e300, -0.0,
+                            "-1"]:
+            _probe(genuine, "registry.get_schema_by_id.live_wire",
+                   c.get_schema_by_id, sid)
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 
