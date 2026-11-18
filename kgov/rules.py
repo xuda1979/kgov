@@ -534,6 +534,11 @@ def iter_messages_from_json(path: str | Path, topic: Optional[str] = None) -> It
 
 def validate_fixture_file(rs: RuleSet, path: str | Path) -> list[Violation]:
     """Validate every message read from a JSON fixture against a ruleset."""
+    # A junk rs from a direct library caller (or a test double) has no usable
+    # rule set — validate_message fail-closes on the same attribute shape, so
+    # do the same before reaching rs.topic below instead of raw AttributeError.
+    if not hasattr(rs, "topic") or not hasattr(rs, "fields"):
+        return []
     out: list[Violation] = []
     for msg in iter_messages_from_json(path=path, topic=rs.topic):
         out.extend(validate_message(rs, msg))

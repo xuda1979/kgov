@@ -627,6 +627,15 @@ def test_rules_internals_probes(tmp_path):
                lambda path=path: list(rl.iter_messages_from_json(path)))
         _probe(genuine, "rules.validate_fixture_file.path_junk",
                rl.validate_fixture_file, rl.RuleSet(), path)
+    # junk rs flowing into validate_fixture_file: a direct library caller can
+    # pass anything as the ruleset.  validate_message fail-closes on rs.topic /
+    # rs.fields, but validate_fixture_file itself reaches rs.topic on the way
+    # to iter_messages_from_json — junk rs used to raw-crash with AttributeError
+    # on the *real file branch* (the gate-dying junk-path probes above never
+    # reach it).  A junk rs must fold into a clean empty result.
+    for rs_junk in JUICE:
+        _probe(genuine, "rules.validate_fixture_file.junk_rs",
+               rl.validate_fixture_file, rs_junk, tmp_path / "fx_list.json")
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 
@@ -1141,6 +1150,43 @@ def test_cli_internals_probes(tmp_path, monkeypatch):
     p.write_bytes(b"\x00\x01\xff\xfe")
     _probe(genuine, "cli._load_schema_text.file_content",
            c._load_schema_text, str(p), None)
+    # _validate direct-arg surface: cmd_check reaches it with a real RuleSet,
+    # but a direct library caller can pass junk rs / junk message paths / junk
+    # broker-topic-registry combos.  A junk rs flowing into the messages
+    # branch used to raw-crash with AttributeError on rs.topic inside
+    # validate_fixture_file (rules.py, now fail-closed like validate_message),
+    # so a real message file + junk rs must fold into a clean empty result.
+    from kgov.rules import RuleSet
+
+    rs_good = RuleSet()
+    rs_good.topic = "payments"
+    rs_good.name = "probe"
+    rs_good.fields = {}
+    rs_good.version = "1"
+    p_msgs = tmp_path / "msgs_valid.json"
+    p_msgs.write_text('{"topic": "payments", "partition": 0, '
+                      '"messages": [{"offset": 0, "value": {}}]}',
+                      encoding="utf-8")
+    for j in JUICE:
+        # junk rs over a real existing fixture file
+        _probe(genuine, "cli._validate.junk_rs_real_file",
+               c._validate, j, p_msgs, None, None)
+        # junk messages-path shapes die at the isinstance/is_file gates
+        _probe(genuine, "cli._validate.junk_messages_path",
+               c._validate, rs_good, j, None, None)
+        # junk broker/topic values die at the string gates (never a wire reach)
+        _probe(genuine, "cli._validate.junk_broker_gate",
+               c._validate, rs_good, None, j, "t")
+        _probe(genuine, "cli._validate.junk_topic_gate",
+               c._validate, rs_good, None, "127.0.0.1:1", j)
+        # registry_url without a broker: no scan is done, only the URL gate
+        _probe(genuine, "cli._validate.junk_registry_url_nobroker",
+               c._validate, rs_good, None, None, None, j)
+    # junk registry_url shapes die at the gate before the lazy broker import;
+    # truthy-str registry over an unreachable broker is pinned by the live-wire
+    # probe above (junkstr_reg).  No source at all returns None without error.
+    _probe(genuine, "cli._validate.no_source", c._validate, rs_good, None,
+           None, None)
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 
