@@ -276,7 +276,10 @@ def list_topics(bootstrap: str, timeout: float = 10.0) -> list[dict]:
     admin = AdminClient(
         {"bootstrap.servers": bootstrap, "log_level": 0, "socket.timeout.ms": int(timeout * 1000)}
     )
-    md = admin.list_topics(timeout=timeout)
+    try:
+        md = admin.list_topics(timeout=timeout)
+    except Exception as exc:
+        raise BrokerConnectError(f"cannot reach broker {bootstrap!r}: {exc}") from exc
     out: list[dict] = []
     for name, tmeta in sorted(md.topics.items()):
         if tmeta.error is not None:

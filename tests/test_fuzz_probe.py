@@ -11,7 +11,10 @@ traceback frame is outside a ``kgov`` module.  Designed contracts are:
 * plain ``ValueError`` raised from a fail-closed gate inside a kgov module.
 
 The probes are network-free: registry client probes use the fast-refused
-``http://127.0.0.1:1`` base or the in-memory mock store accessors only.
+``http://127.0.0.1:1`` base or the in-memory mock store accessors only.  The
+broker "live wire" probes contact only an unreachable localhost port
+(``127.0.0.1:1``, TCP refused) under ``socket.timeout.ms``, so no external
+network is ever touched.
 """
 
 from __future__ import annotations
@@ -1036,7 +1039,60 @@ def test_cli_live_wire_probes(tmp_path, monkeypatch):
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 
-def test_cli_file_content_probes(tmp_path, monkeypatch):
+def test_broker_live_wire_probes(tmp_path, monkeypatch):
+    """The live confluent-kafka client join must fail closed, never leak.
+
+    cmd_topics with a VALID --bootstrap and the broker read paths with a valid
+    bootstrap/topic pass the pure-Python gates and reach the real confluent
+    client — the same join the junk probes above die before ever hitting.  An
+    unreachable localhost port (127.0.0.1:1, TCP refused) fails fast under
+    ``socket.timeout.ms`` with no external network, and each path must fail
+    closed in its designed shape:
+
+    - ``broker.read_topic``    -> BrokerConnectError via _probe_bootstrap
+    - ``broker.list_topics``   -> BrokerConnectError (wrapped, no raw KafkaException)
+    - ``broker.consumer_groups`` -> {} (designed degradation on unreachable)
+    - ``cmd_topics``           -> CliError ("failed to list topics")
+
+    Junk group_id/n/timeout values die at the pure-Python gates (fast), so the
+    live-wire reach is limited to valid values; timeouts stay at 0.5s so each
+    reach costs ~0.5s under socket.timeout.ms.  Truthy junk output paths with a
+    raising list_topics never _write_out (the write only happens on success).
+    """
+    from kgov.broker import consumer_groups, list_topics, read_topic
+    from kgov.cli import cmd_topics
+
+    monkeypatch.chdir(tmp_path)
+    genuine = {}
+    un = "127.0.0.1:1"  # TCP refused, fails fast with no external network
+
+    # Junk group_id/n values: 2+30 junk g-values x 5 n-values, all dying at
+    # the str/int gates before _require_kafka.  Only "abc"/"1" (non-empty
+    # strs that happen to sit in JUICE) with n in {1, None} reach the wire.
+    for g in JUICE + ["a/b", b"x"]:
+        for n in [1, -1, "x", 2.5, None]:
+            _probe(genuine, "broker.read_topic.live_wire.junk_gates",
+                   lambda g=g, n=n: read_topic(un, "_kgov_never_a_topic",
+                                               group_id=g, n=n, timeout=0.5))
+    # Valid group_id/n reach the wire and must fail closed (~0.5s each).
+    for g in ["z" * 5, "a/b", "a b", "x" * 300]:
+        for n in [None, 1, 2]:
+            _probe(genuine, "broker.read_topic.live_wire.reach",
+                   lambda g=g, n=n: read_topic(un, "_kgov_never_a_topic",
+                                               group_id=g, n=n, timeout=0.5))
+    # Junk timeouts die at _require_timeout; only 3.14 (a positive finite
+    # float that happens to sit in JUICE) reaches the wire per read path.
+    for t in JUICE + [0.5]:
+        _probe(genuine, "broker.list_topics.live_wire", list_topics, un, t)
+        _probe(genuine, "broker.consumer_groups.live_wire",
+               consumer_groups, un, t)
+    # cmd_topics valid bootstrap: junk timeouts die fast inside list_topics
+    # (wrapped CliError); timeout 0.5 reaches the wire once per output value,
+    # and the output path never writes because list_topics raised.
+    for o in [None, "topics_out.json", 5, b"x", []]:
+        ns = type("NS", (), {"bootstrap": un, "timeout": 0.5, "output": o})()
+        _probe(genuine, "cli.cmd_topics.live_wire", cmd_topics, ns)
+    assert genuine == {}, f"genuine crashes escaped: {genuine}"
     """cmd_check / cmd_report / cmd_export with junk-typed FILE CONTENTS.
 
     The junk-namespace probes above die at the parent gates (cmd_check needs
