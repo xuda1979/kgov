@@ -365,6 +365,56 @@ def test_registry_live_wire_junk_axis_probes():
                             "-1"]:
             _probe(genuine, "registry.get_schema_by_id.live_wire",
                    c.get_schema_by_id, sid)
+
+
+def test_registry_live_wire_junk_fixture_probes():
+    """Composed wire derived from junk fixture *data* (junk schema/id/version/
+    compatibility values, junk subject keys) must fail closed.
+
+    The arg-junk probes drive a clean fixture, so the response-derivation
+    chain — accessor coercion, _wire_schema, _reply json.dumps fallbacks, and
+    the client parse — is never exercised with junk-typed values.  Seeding
+    the mock with junk data closes that gap in one composed round-trip.
+    """
+    from kgov.mock_registry import MockRegistry
+    from kgov.registry import SchemaRegistryClient
+
+    def _junk_fixture() -> dict:
+        subs = {}
+        for k in (1, b"bb", None, True, 3.14, "a", "s"):
+            subs[k] = [
+                {"id": i, "version": v, "schema": sv, "compatibility": cv}
+                for i, (v, sv, cv) in enumerate((
+                    (1, {"type": "string"}, "BACKWARD"),
+                    (2, "long", {"x": 1}),
+                    (3, set(), b"B"),
+                    (4, 42, None),
+                    (5, {"a": [1, {"b": 2}]}, []),
+                    (6, None, True),
+                    (7, [1, 2], "FORWARD"),
+                    (8, object(), ("NONE",)),
+                ))
+            ]
+        return {"subjects": subs}
+
+    genuine = {}
+    with MockRegistry(fixture=_junk_fixture()) as mk:
+        c = SchemaRegistryClient(mk.base_url, timeout=5)
+        for s in (str(k) for k in (1, b"bb", None, True, 3.14, "a", "s")):
+            _probe(genuine, "registry.get_versions.junk_fixture",
+                   c.get_versions, s)
+            _probe(genuine, "registry.get_latest.junk_fixture",
+                   c.get_latest, s)
+            for v in ("latest", 1, 2, 8, "1", "999", 0, -1, 3.14):
+                _probe(genuine, "registry.get_version.junk_fixture",
+                       c.get_version, s, v)
+        for sid in (0, 1, 2, 3, 4, 5, 6, 7, 8, 99, -1, 3.14, "7", b"2",
+                    None):
+            _probe(genuine, "registry.get_schema_by_id.junk_fixture",
+                   c.get_schema_by_id, sid)
+        _probe(genuine, "registry.list_subjects.junk_fixture", c.list_subjects)
+        _probe(genuine, "registry.to_fixture_dict.junk_fixture",
+               c.to_fixture_dict)
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 
