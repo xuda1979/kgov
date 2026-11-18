@@ -175,6 +175,23 @@ def test_schema_diff_full_http_url_refs(server) -> None:
     assert data["compatible"] is False
 
 
+def test_schema_diff_full_url_fetch_failure_exits_3(capsys):
+    """A full-URL ref pointing at an unreachable registry must surface as a
+    clean runtime error (exit 3, ``kgov: error:``, no traceback), not a raw
+    urlopen exception escaping main(). Port 1 is never listening on
+    loopback, so the fetch fails without needing a live server."""
+    code = main([
+        "schema-diff",
+        "--before", "http://127.0.0.1:1/subjects/x/versions/1",
+        "--after", "http://127.0.0.1:1/subjects/x/versions/2",
+    ])
+    out = capsys.readouterr()
+    assert code == 3
+    assert out.err.startswith("kgov: error: cannot fetch schema from http://127.0.0.1:1/")
+    assert "Traceback" not in out.err
+    assert out.out == ""
+
+
 # ---------------------------------------------------------------------------
 # check
 # ---------------------------------------------------------------------------
