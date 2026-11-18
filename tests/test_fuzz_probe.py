@@ -926,24 +926,34 @@ def test_cli_internals_probes(tmp_path, monkeypatch):
     _probe(genuine, "cli.main.mixed_junk", c.main, [1, b"x", [], {}])
     _probe(genuine, "cli.main.unknown_cmd", c.main, ["bogus-cmd"])
     _probe(genuine, "cli.build_parser", c.build_parser)
-    # _validate: with at least one source gate guaranteed to fail, junk never
-    # reaches a live client.  messages_path junk always fails its gate first
-    # (_validate runs the messages branch before the broker branch); the
-    # broker branch junk is probed with a non-str broker so the --broker gate
-    # fails before any confluent import / AdminClient is touched.
-    import kgov.rules as rl
+    # _load_schema_text with an *existing* file on disk: the junk-path probes
+    # above die at the CLI gates / FileNotFoundError, so the read_text ->
+    # json.loads -> json.dumps pipe is exercised only with real content.  Deep
+    # nesting, lone-surrogate JSON escapes, junk-but-parseable top-level shapes
+    # and invalid UTF-8 all fail closed (json.loads/json.dumps handle them, or
+    # a designed CliError) — never a raw RecursionError/UnicodeDecodeError
+    # escape.
+    import json as _json
 
-    rs = rl.RuleSet()
-    for j in JUICE:
-        _probe(genuine, "cli._validate.junk_msgpath", c._validate, rs, j,
-               None, None)
-        _probe(genuine, "cli._validate.junk_broker", c._validate, rs, None,
-               j, None)
-        _probe(genuine, "cli._validate.junk_topic", c._validate, rs, None,
-               b"x", j)
-        _probe(genuine, "cli._validate.junk_registry", c._validate, rs,
-               None, b"x", b"x", j)
-    _probe(genuine, "cli._validate.both_junk", c._validate, rs, None, 3.14, [])
+    for name, raw in [
+        ("deep1000.json", "[" * 1000 + "0" + "]" * 1000),
+        ("deep5000.json", "[" * 5000 + "0" + "]" * 5000),
+        ("surr.json", _json.dumps({"a": "\ud800"}, ensure_ascii=True)),
+        ("null.json", "null"),
+        ("int.json", "42"),
+        ("str.json", '"x"'),
+        ("arr.json", '[1,{"a":2}]'),
+        ("empty.json", ""),
+    ]:
+        p = tmp_path / name
+        p.write_text(raw, encoding="utf-8")
+        _probe(genuine, "cli._load_schema_text.file_content",
+               c._load_schema_text, str(p), None)
+    # genuinely invalid UTF-8 bytes trip the UnicodeDecodeError branch
+    p = tmp_path / "bin.json"
+    p.write_bytes(b"\x00\x01\xff\xfe")
+    _probe(genuine, "cli._load_schema_text.file_content",
+           c._load_schema_text, str(p), None)
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 
