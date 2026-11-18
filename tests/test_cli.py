@@ -1370,6 +1370,39 @@ def test_registry_cli_output_write_fails_closed(server) -> None:
         assert "Traceback" not in err, out
 
 
+def test_registry_cli_output_file_success_writes_full_dump(server, tmp_path) -> None:
+    """README:105: ``kgov registry --registry-url http://localhost:8081
+    [-o registry.json]`` documents the -o flag writing the registry output to
+    a file. The fail-closed legs are pinned by
+    test_registry_cli_output_write_fails_closed; this test pins the success
+    path: exit 0 with the same rendered full-dump JSON (top-level
+    ``{"subjects", "generated_at"}``) in the file as the stdout route emits."""
+    out_path = tmp_path / "registry.json"
+    code, _, _ = _run("registry", "--registry-url", server.base_url,
+                      "-o", str(out_path))
+    assert code == 0
+    data = json.loads(out_path.read_text(encoding="utf-8"))
+    assert set(data) == {"subjects", "generated_at"}
+    assert set(data["subjects"]) == {"orders-value", "payments-value"}
+    # file content identical to what the no-flag stdout route renders
+    code, out, _ = _run("registry", "--registry-url", server.base_url)
+    assert code == 0
+    assert json.loads(out) == data
+
+
+def test_registry_cli_output_file_success_writes_subject(server, tmp_path) -> None:
+    """The ``-o`` success path must also honor ``--subject``: the file then
+    carries that subject's per-version shape instead of the full dump."""
+    out_path = tmp_path / "subject.json"
+    code, _, _ = _run("registry", "--registry-url", server.base_url,
+                      "--subject", "payments-value", "-o", str(out_path))
+    assert code == 0
+    data = json.loads(out_path.read_text(encoding="utf-8"))
+    assert set(data) == {"subject", "versions"}
+    assert data["subject"] == "payments-value"
+    assert [v["version"] for v in data["versions"]] == [1, 2]
+
+
 def test_registry_wire_mode_single_response(server) -> None:
     """GET /mode must emit exactly one response (the intended 200). Before the
     fall-through fix the /mode branch replied 200 and then kept routing into a
