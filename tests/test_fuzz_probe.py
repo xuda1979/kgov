@@ -20,6 +20,7 @@ network is ever touched.
 from __future__ import annotations
 
 import dataclasses
+import json as _json
 from pathlib import Path
 
 import pytest
@@ -578,6 +579,54 @@ def test_rules_internals_probes(tmp_path):
     for path in (tmp_path / "nope.yaml", tmp_path, "abc\x00def.yaml"):
         _probe(genuine, "rules.load_rules_file.path_junk",
                rl.load_rules_file, path)
+    # iter_messages_from_json / validate_fixture_file suffer the same gap as
+    # load_rules_file: the battery passes junk paths that die at the isinstance
+    # gate, so the read_text -> json.loads -> Message pipe was never driven.
+    # Direct probe before pinning: 0 genuine escapes — fixture files with
+    # list/typed/dict roots, junk roots (int/str/null), scalar/object
+    # 'messages', junk items, deep nesting, lone surrogates, empty and
+    # invalid-UTF-8 files, plus path-shaped junk (missing / directory /
+    # NUL / bytes / int / float / list / dict), all reach a clean Message list
+    # or the designed RulesConfigError.
+    for name, raw, binary in [
+        ("fx_list.json", _json.dumps([{"offset": 3, "key": "k1",
+                                       "value": {"f": "x"}},
+                                      {"value": 42}, "not-a-dict", {}]), False),
+        ("fx_dict.json", _json.dumps({"topic": "payments", "partition": 2,
+                                      "messages": [{"offset": 0, "key": None,
+                                                    "value": {"a": 1}},
+                                                   {"value": [1, 2]}, 7, None,
+                                                   {"topic": 12, "partition": "p",
+                                                    "offset": "o", "key": 5,
+                                                    "value": {"f": 1}}]}), False),
+        ("fx_int.json", "42", False),
+        ("fx_str.json", '"hello"', False),
+        ("fx_null.json", "null", False),
+        ("fx_arr.json", "[]", False),
+        ("fx_empty.json", "{}", False),
+        ("fx_msgs_scalar.json", '{"messages": 42}', False),
+        ("fx_msgs_obj.json", '{"messages": {"a": 1}}', False),
+        ("fx_deep.json", "[" * 5000 + "0" + "]" * 5000, False),
+        ("fx_surr.json", _json.dumps({"messages": [{"value": {"a": "\ud800"}}]},
+                                     ensure_ascii=True), False),
+        ("fx_empty_file.json", "", False),
+        ("fx_bin.json", b"\x00\x01\xff\xfe", True),
+    ]:
+        p = tmp_path / name
+        if binary:
+            p.write_bytes(raw)  # type: ignore[arg-type]
+        else:
+            p.write_text(str(raw), encoding="utf-8")
+        _probe(genuine, "rules.iter_messages_from_json.file_branch",
+               lambda p=p: list(rl.iter_messages_from_json(p)))
+        _probe(genuine, "rules.validate_fixture_file.file_branch",
+               rl.validate_fixture_file, rl.RuleSet(), p)
+    for path in (tmp_path / "nope.json", tmp_path, "abc\x00def.json",
+                 b"x.json", 42, None, 1.5, ["x"], {"p": 1}):
+        _probe(genuine, "rules.iter_messages_from_json.path_junk",
+               lambda path=path: list(rl.iter_messages_from_json(path)))
+        _probe(genuine, "rules.validate_fixture_file.path_junk",
+               rl.validate_fixture_file, rl.RuleSet(), path)
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 
