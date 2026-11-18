@@ -1,0 +1,13 @@
+{
+  "type": "record",
+  "name": "Payment",
+  "namespace": "com.example.ecommerce",
+  "fields": [
+    {"name": "payment_id", "type": "string"},
+    {"name": "amount_cents", "type": "long"},
+    {"name": "currency", "type": "string"},
+    {"name": "status", "type": "string"},
+    {"name": "fee_cents", "type": ["null", "long"], "default": null},
+    {"name": "created_at", "type": ["null", "string"], "default": null}
+  ]
+}

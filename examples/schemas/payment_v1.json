@@ -1,0 +1,12 @@
+{
+  "type": "record",
+  "name": "Payment",
+  "namespace": "com.example.ecommerce",
+  "doc": "payment event, v1 (baseline)",
+  "fields": [
+    {"name": "payment_id", "type": "string"},
+    {"name": "amount_cents", "type": "long"},
+    {"name": "currency", "type": "string"},
+    {"name": "status", "type": "string"}
+  ]
+}

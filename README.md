@@ -156,6 +156,54 @@ kgov export --type report --topics topics.json --format csv -o report.csv
 `MockRegistry`（`kgov.mock_registry`）在本地 127.0.0.1 起一个只读的 Confluent
 wire Schema Registry，供 `kgov registry` / 集成测试离线使用真实的 HTTP 往返。
 
+## 示例（离线数据集）
+
+`examples/` 提供一套连贯的离线示例数据，覆盖全部子命令的输入格式，无需
+真实 broker / Schema Registry 即可端到端体验：
+
+```text
+examples/
+├── schemas/                # Avro schema：payment_v1 / payment_v2（兼容演进）、
+│                           #   payment_breaking（不兼容演进）
+├── rules/rules.yaml        # payments topic 脏数据规则
+├── messages/               # payments_messages.json：6 条含脏数据的消息
+├── topics/topics.json      # broker 元数据快照
+├── registry/registry.json  # Schema Registry 快照（subjects / versions / 兼容性）
+└── consumer_groups/        # 消费组快照
+```
+
+用 `python -m kgov.cli`（或安装 console script 后的 `kgov`）直接体验：
+
+```bash
+# schema-diff：v1 → v2 为兼容演进（Additive，退出码 0）
+#              v1 → payment_breaking 为不兼容（Breaking，退出码 1）
+python -m kgov.cli schema-diff --before examples/schemas/payment_v1.json \
+    --after examples/schemas/payment_v2.json --subject payments-value
+python -m kgov.cli schema-diff --before examples/schemas/payment_v1.json \
+    --after examples/schemas/payment_breaking.json --subject payments-value
+
+# check：对 6 条消息执行规则，检出 8 处违规，门禁失败（退出码 1）
+python -m kgov.cli check --config examples/rules/rules.yaml \
+    --messages examples/messages/payments_messages.json
+
+# report：三 topic 治理报告（schema 状态 / 陈旧度 / 违规计数）
+python -m kgov.cli report --topics examples/topics/topics.json \
+    --registry examples/registry/registry.json \
+    --groups examples/consumer_groups/consumer_groups.json \
+    --rules examples/rules/rules.yaml \
+    --messages examples/messages/payments_messages.json
+
+# export：把治理报告导出为 CSV
+python -m kgov.cli export --type report --topics examples/topics/topics.json \
+    --registry examples/registry/registry.json \
+    --groups examples/consumer_groups/consumer_groups.json \
+    --format csv -o report.csv
+```
+
+`registry` 命令可连本地 MockRegistry（`kgov.mock_registry`，Confluent wire 端点）
+离线跑全量 / 单 subject 拉取；`topics` 需要真实 broker（`kgov[broker]`），
+不可达时按退出码约定以码 3 报错。
+
 ## 开发
 
 ```bash

@@ -1,0 +1,70 @@
+{
+  "subjects": {
+    "payments-value": [
+      {
+        "id": 1,
+        "version": 1,
+        "compatibility": "BACKWARD",
+        "schema": {
+          "type": "record",
+          "name": "Payment",
+          "namespace": "com.example.ecommerce",
+          "doc": "payment event, v1 (baseline)",
+          "fields": [
+            {"name": "payment_id", "type": "string"},
+            {"name": "amount_cents", "type": "long"},
+            {"name": "currency", "type": "string"},
+            {"name": "status", "type": "string"}
+          ]
+        }
+      },
+      {
+        "id": 2,
+        "version": 2,
+        "compatibility": "BACKWARD",
+        "schema": {
+          "type": "record",
+          "name": "Payment",
+          "namespace": "com.example.ecommerce",
+          "fields": [
+            {"name": "payment_id", "type": "string"},
+            {"name": "amount_cents", "type": "long"},
+            {"name": "currency", "type": "string"},
+            {"name": "status", "type": "string"},
+            {"name": "fee_cents", "type": ["null", "long"], "default": null},
+            {"name": "created_at", "type": ["null", "string"], "default": null}
+          ]
+        }
+      }
+    ],
+    "orders-value": [
+      {
+        "id": 10,
+        "version": 1,
+        "compatibility": "BACKWARD",
+        "schema": {
+          "type": "record",
+          "name": "Order",
+          "namespace": "com.example.ecommerce",
+          "fields": [
+            {"name": "order_id", "type": "string"},
+            {"name": "total_cents", "type": "long"}
+          ]
+        }
+      },
+      {
+        "id": 11,
+        "version": 2,
+        "compatibility": "BREAKING",
+        "schema": {
+          "type": "record",
+          "name": "Order",
+          "namespace": "com.example.ecommerce",
+          "fields": [
+            {"name": "order_id", "type": "string"}
+          ]
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "topics": [
+    {
+      "name": "payments",
+      "partitions": 12,
+      "replication_factor": 3,
+      "owner": "payments-team",
+      "tags": ["core", "critical"],
+      "schema_subject": "payments-value",
+      "latest_message_at": "2026-11-18T09:30:00Z"
+    },
+    {
+      "name": "orders",
+      "partitions": 6,
+      "replication_factor": 3,
+      "owner": "checkout-eng",
+      "tags": ["core"],
+      "schema_subject": "orders-value",
+      "latest_message_at": "2026-11-10T11:30:00Z"
+    },
+    {
+      "name": "inventory-events",
+      "partitions": 3,
+      "replication_factor": 2,
+      "owner": "warehouse",
+      "tags": ["event-log"],
+      "schema_subject": null,
+      "latest_message_at": "2026-10-01T00:00:00Z"
+    }
+  ]
+}

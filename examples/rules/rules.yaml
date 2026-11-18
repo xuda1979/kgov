@@ -1,0 +1,28 @@
+# Dirty-data rules for the payments topic (offline example dataset).
+# Run: kgov check --config examples/rules/rules.yaml \
+#                 --messages examples/messages/payments_messages.json
+version: 1
+topic: payments
+name: payments-constraints
+rules:
+  - name: payments-constraints
+    fields:
+      payment_id:
+        type: string
+        required: true
+      amount_cents:
+        type: integer
+        required: true
+        non_null: true
+        range: {minimum: 0, maximum: 9_999_999_999}
+      currency:
+        type: string
+        required: true
+        pattern: "^[A-Z]{3}$"
+      status:
+        type: string
+        enum: [ACCEPTED, PENDING, REJECTED, EXPIRED]
+      fee_cents:
+        type: integer
+        non_null: true
+        range: {minimum: 0}
