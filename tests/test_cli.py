@@ -495,6 +495,97 @@ def test_check_broker_scan_failure_exit_3(capsys, monkeypatch):
     assert "broker scan failed" in out.err
 
 
+def test_check_broker_scan_success_path(tmp_path, capsys, monkeypatch):
+    """README.md:96-97 documents `kgov check --config rules.yaml --broker
+    host:port --topic payments` for live topic scanning, but
+    test_check_broker_scan_failure_exit_3 pins only the failure leg (exit 3)
+    at the main() boundary. The success path — read_topic returning clean
+    BrokerMessage values reaching the gate with real per-message violations
+    and the documented exit 0/1 decision — is pinned only in cmd_check-level
+    tests (fences), never through main(). A clean wire read must exit 0 with
+    the full payload shape, a violating read must exit 1 with per-message
+    violations carrying the wire position (partition/offset/key), and the
+    exact-equality gate boundary must hold through the broker route too."""
+    from datetime import datetime
+
+    from kgov.broker import BrokerMessage
+
+    rules = str(FIXTURES / "rules" / "rules_scale.yaml")
+    clean = {"payment_id": "pay_009", "amount_cents": 2500, "currency": "USD",
+             "status": "ACCEPTED", "fee_cents": 25}
+    viol = {"payment_id": "pay_008", "amount_cents": -5, "currency": "usd",
+            "status": "PENDING", "fee_cents": 0}
+
+    holder = {}
+    monkeypatch.setattr(
+        "kgov.broker.read_topic",
+        lambda bootstrap, topic, value_decoder=None, **kw: holder["msgs"],
+    )
+    monkeypatch.setattr("kgov.broker.AvroRecordDecoder", lambda *a, **k: None)
+
+    def scan(messages):
+        holder["msgs"] = [
+            BrokerMessage(topic="payments", partition=0, offset=i,
+                          key=m["payment_id"], value=m)
+            for i, m in enumerate(messages)
+        ]
+
+    out = tmp_path / "result.json"
+
+    # clean wire read: gate passes, full payload shape, exit 0
+    scan([clean])
+    code = main(["check", "--config", rules,
+                 "--broker", "127.0.0.1:9092", "--topic", "payments",
+                 "-o", str(out)])
+    assert code == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert set(data) == {"ok", "gate", "violation_count", "rule", "topic",
+                         "violations", "generated_at"}
+    assert data["ok"] is True
+    assert data["gate"] == 0
+    assert data["violation_count"] == 0
+    assert data["rule"] == "payments-constraints"
+    assert data["topic"] == "payments"
+    assert data["violations"] == []
+    generated_at = data["generated_at"]
+    parsed = datetime.fromisoformat(generated_at)
+    assert parsed.tzinfo is not None and parsed.utcoffset().total_seconds() == 0
+    assert "ok=True violations=0 gate=0 -> PASS" in capsys.readouterr().err
+
+    # one violating wire message: gate fails, exit 1, violations carry position
+    scan([viol])
+    code = main(["check", "--config", rules,
+                 "--broker", "127.0.0.1:9092", "--topic", "payments",
+                 "-o", str(out)])
+    assert code == 1
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["ok"] is False
+    assert data["violation_count"] == 2
+    assert data["topic"] == "payments"
+    viols = data["violations"]
+    assert len(viols) == 2
+    assert sorted(v["field"] for v in viols) == ["amount_cents", "currency"]
+    assert sorted(v["check"] for v in viols) == ["pattern", "range"]
+    assert all(v["partition"] == 0 and v["offset"] == 0
+               and v["key"] == "pay_008" for v in viols)
+    assert "ok=False violations=2 gate=0 -> FAIL" in capsys.readouterr().err
+
+    # exact-equality gate boundary holds through the broker route
+    code = main(["check", "--config", rules,
+                 "--broker", "127.0.0.1:9092", "--topic", "payments",
+                 "--max-violations", "2", "-o", str(out)])
+    assert code == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["gate"] == 2
+    assert "ok=False violations=2 gate=2 -> PASS" in capsys.readouterr().err
+
+    code = main(["check", "--config", rules,
+                 "--broker", "127.0.0.1:9092", "--topic", "payments",
+                 "--max-violations", "1", "-o", str(out)])
+    assert code == 1
+    assert "ok=False violations=2 gate=1 -> FAIL" in capsys.readouterr().err
+
+
 # ---------------------------------------------------------------------------
 # report
 # ---------------------------------------------------------------------------
