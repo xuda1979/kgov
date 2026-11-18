@@ -1187,6 +1187,20 @@ def test_cli_internals_probes(tmp_path, monkeypatch):
     # probe above (junkstr_reg).  No source at all returns None without error.
     _probe(genuine, "cli._validate.no_source", c._validate, rs_good, None,
            None, None)
+    # _validate broker branch: the live-wire probes die inside read_topic (the
+    # unreachable broker raises before it returns), so the validation
+    # comprehension + catch at cli.py:302-323 is otherwise never driven.
+    # Monkeypatch read_topic (imported lazily per call) to hand back junk
+    # result shapes: non-iterables / non-message entries must fold into the
+    # designed CliError "broker scan returned invalid messages" and empty
+    # containers degrade to a clean [] — no raw TypeError/AttributeError.
+    import kgov.broker as bk
+
+    for j in JUICE:
+        monkeypatch.setattr(bk, "read_topic",
+                            lambda *a, _j=j, **k: _j, raising=False)
+        _probe(genuine, "cli._validate.broker_junk_read_result",
+               c._validate, rs_good, None, "127.0.0.1:1", "t")
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 
