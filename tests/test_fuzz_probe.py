@@ -630,7 +630,7 @@ def test_rules_internals_probes(tmp_path):
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 
-def test_report_probes():
+def test_report_probes(tmp_path):
     import kgov.report as rp
 
     genuine = {}
@@ -704,6 +704,71 @@ def test_report_probes():
     st = rp.TopicState(name="t", tags=None, partitions=None, schema_version=None,
                        stale=None, violation_count=None)
     _probe(genuine, "report.TopicState.to_dict.empty", st.to_dict)
+    # _read_json / build_governance_report file branches suffer the same gap
+    # as the Increment 47/48 rules helpers: the juice loop above passes junk
+    # paths that die at the isinstance gate, so the read_text -> json.loads
+    # pipe was never driven. Direct probe before pinning: 0 genuine escapes —
+    # fixture files with list/dict/int/str/null/array/empty-object roots, deep
+    # nesting, lone surrogates, empty and invalid-UTF-8 files, plus path-shaped
+    # junk (missing / directory / NUL / bytes / int / float / list / dict),
+    # and build_governance_report's topics/registry/groups fixture-path legs
+    # (junk roots, deep nesting, invalid-UTF-8, missing files, junk violation
+    # lists, junk now) all fail closed as designed ValueError or degrade.
+    def _write_fx(name, raw, binary=False):
+        p = tmp_path / name
+        if binary:
+            p.write_bytes(raw)  # type: ignore[arg-type]
+        else:
+            p.write_text(str(raw), encoding="utf-8")
+        return p
+    for name, raw in [
+        ("r_list.json", "[1, 2, 3]"),
+        ("r_dict.json", '{"topics": [{"name": "t1"}], "groups": []}'),
+        ("r_int.json", "42"),
+        ("r_str.json", '"hello"'),
+        ("r_null.json", "null"),
+        ("r_arr.json", "[]"),
+        ("r_obj.json", "{}"),
+        ("r_deep.json", "[" * 5000 + "0" + "]" * 5000),
+        ("r_surr.json", _json.dumps({"topics": [{"name": "\ud800"}]},
+                                    ensure_ascii=True)),
+        ("r_empty.json", ""),
+        ("r_bad.json", '{]'),
+        ("r_bin.json", b"\x00\x01\xff\xfe"),
+    ]:
+        p = _write_fx(name, raw if not isinstance(raw, bytes) else raw,
+                      binary=isinstance(raw, bytes))
+        _probe(genuine, "report._read_json.file_branch", rp._read_json, p)
+        _probe(genuine, "report.build_governance_report.topics_path",
+               rp.build_governance_report, p)
+    for path in (tmp_path / "nope.json", tmp_path, "abc\x00def.json",
+                 b"x.json", 42, None, 1.5, ["x"], {"p": 1}):
+        _probe(genuine, "report._read_json.path_junk", rp._read_json, path)
+    # full three-fixture call plus per-fixture junk paths at the report level
+    registry = {"subjects": {"s": {"id": 1, "version": 1,
+                                   "latest_version": 1,
+                                   "compatibility": "BACKWARD"}}}
+    _probe(genuine, "report.bgr.full",
+           rp.build_governance_report,
+           _write_fx("t4.json", '[{"name": "t1", "schema_subject": "s"}]'),
+           registry,
+           _write_fx("g4.json", '[{"group": "g", "topic": "t1", "lag": 0}]'),
+           [{"topic": "t1", "count": 1}])
+    _probe(genuine, "report.bgr.registry_missing",
+           rp.build_governance_report,
+           _write_fx("t5.json", '[{"name": "t1"}]'),
+           tmp_path / "nope-registry.json")
+    _probe(genuine, "report.bgr.registry_junk_root",
+           rp.build_governance_report,
+           _write_fx("t6.json", '[{"name": "t1"}]'),
+           _write_fx("r2.json", "42"))
+    _probe(genuine, "report.bgr.groups_junk_root",
+           rp.build_governance_report,
+           _write_fx("t7.json", '[{"name": "t1"}]'), registry,
+           _write_fx("g2.json", "[1, 2, 3]"))
+    _probe(genuine, "report.bgr.junk_violations",
+           lambda: rp.build_governance_report(
+               [{"name": "t1"}], None, None, [{"topic": 1}]))
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 
