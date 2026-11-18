@@ -571,6 +571,39 @@ def test_junk_grace_seconds_fall_back_to_non_stale():
                              settings=st).stale is True
 
 
+def test_default_staleness_thresholds_at_exact_boundary():
+    """README:143-144 documents the default staleness thresholds: with a
+    consumer group, ``last_consumed_at`` older than 3 days marks the topic
+    stale; without a consumer group, ``latest_message_at`` older than 2 days
+    does. The comparisons are strict ``>`` (report.py:241/:248): exactly at
+    the boundary is NOT stale, one second past IS stale. Junk/bool grace
+    values in hand-built settings are pinned elsewhere; this test pins the
+    stock defaults only."""
+    settings = StalenessSettings()
+    assert settings.consumer_grace_seconds == 86400 * 3
+    assert settings.producer_grace_seconds == 86400 * 2
+    assert settings.no_consumer_since_epoch is False
+
+    # consumer branch: default 3-day grace, strict >. latest_message_at is 4
+    # days old so the producer branch (2 days) would be stale if reached —
+    # asserting False proves the consumer branch (consumed 3 days ago) governs.
+    t_consumed = {"name": "t1", "latest_message_at": (NOW - timedelta(days=4)).isoformat()}
+    groups_consumed = {"t1": {"last_consumed_at": (NOW - timedelta(days=3)).isoformat()}}
+    assert build_topic_state(t_consumed, {}, groups_consumed, {}, now=NOW,
+                             settings=settings).stale is False
+    groups_over = {"t1": {"last_consumed_at": (NOW - timedelta(days=3, seconds=1)).isoformat()}}
+    assert build_topic_state(t_consumed, {}, groups_over, {}, now=NOW,
+                             settings=settings).stale is True
+
+    # producer branch (no consumer group): default 2-day grace, strict >
+    t_produced = {"name": "t2", "latest_message_at": (NOW - timedelta(days=2)).isoformat()}
+    assert build_topic_state(t_produced, {}, {}, {}, now=NOW,
+                             settings=settings).stale is False
+    t_produced_over = {"name": "t2", "latest_message_at": (NOW - timedelta(days=2, seconds=1)).isoformat()}
+    assert build_topic_state(t_produced_over, {}, {}, {}, now=NOW,
+                             settings=settings).stale is True
+
+
 def test_junk_rule_topic_violations_container_ignored():
     """A junk-typed rule_topic_violations container (None, a str, bytes, a
     list) passed directly to build_topic_state is not a {name: count} mapping
