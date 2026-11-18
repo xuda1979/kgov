@@ -17,6 +17,7 @@ The probes are network-free: registry client probes use the fast-refused
 from __future__ import annotations
 
 import dataclasses
+from pathlib import Path
 
 import pytest
 
@@ -1032,6 +1033,97 @@ def test_cli_live_wire_probes(tmp_path, monkeypatch):
                                          **n})()
                     _probe(genuine, "cli.cmd_schema_diff.live_wire",
                            cmd_schema_diff, ns)
+    assert genuine == {}, f"genuine crashes escaped: {genuine}"
+
+
+def test_cli_file_content_probes(tmp_path, monkeypatch):
+    """cmd_check / cmd_report / cmd_export with junk-typed FILE CONTENTS.
+
+    The junk-namespace probes above die at the parent gates (cmd_check needs
+    an existing --config file, cmd_report an existing --topics file).  A real
+    existing file whose CONTENTS are junk shapes drives the composed chain the
+    gate probes never reach: load_rules_file -> _validate for check; junk
+    topics/registry/groups/violations contents -> build_governance_report for
+    report; and the cmd_export delegations for junk type x format values.
+    """
+    import json
+
+    from kgov.cli import cmd_check, cmd_export, cmd_report
+
+    monkeypatch.chdir(tmp_path)
+    genuine = {}
+    fix = Path(__file__).parent / "fixtures"
+    rules = fix / "rules" / "rules_scale.yaml"
+    msgs = fix / "messages" / "payments_messages.json"
+    topics = fix / "topics" / "topics.json"
+    registry = fix / "registry" / "registry.json"
+    groups = fix / "subject_groups" / "consumer_groups.json"
+
+    def write_junk(name, shape):
+        p = tmp_path / name
+        if shape is None or isinstance(shape, bool):
+            p.write_bytes(b"")  # empty file
+        elif isinstance(shape, bytes):
+            p.write_bytes(shape)
+        elif isinstance(shape, str):
+            p.write_text(shape, encoding="utf-8", errors="replace")
+        else:
+            # json-encode: cyclic containers fail designed; sanitize surrogates
+            try:
+                p.write_text(json.dumps(shape), encoding="utf-8",
+                             errors="replace")
+            except Exception:
+                p.write_text("{}")
+        return p
+
+    def ns(**kw):
+        return type("NS", (), kw)()
+
+    for shape in JUICE:
+        mp = write_junk("msgs.json", shape)
+        _probe(genuine, "cli.cmd_check.junk_msg_contents",
+               cmd_check, ns(config=rules, topic=None, broker=None,
+                             messages=mp, schema_registry=None,
+                             max_violations=None, output=None, gate=False,
+                             quiet=True))
+    for shape in JUICE:
+        rp = write_junk("rules.yaml", shape)
+        _probe(genuine, "cli.cmd_check.junk_rules_contents",
+               cmd_check, ns(config=rp, topic=None, broker=None,
+                             messages=msgs, schema_registry=None,
+                             max_violations=None, output=None, gate=False,
+                             quiet=True))
+    for shape in JUICE:
+        tp = write_junk("topics.json", shape)
+        _probe(genuine, "cli.cmd_report.junk_topics",
+               cmd_report, ns(topics=tp, registry=registry, groups=groups,
+                              rules=None, messages=None, violations=None,
+                              format=None, output=None))
+    for shape in JUICE:
+        rp = write_junk("registry.json", shape)
+        _probe(genuine, "cli.cmd_report.junk_registry",
+               cmd_report, ns(topics=topics, registry=rp, groups=groups,
+                              rules=None, messages=None, violations=None,
+                              format=None, output=None))
+    for shape in JUICE:
+        gp = write_junk("groups.json", shape)
+        _probe(genuine, "cli.cmd_report.junk_groups",
+               cmd_report, ns(topics=topics, registry=registry, groups=gp,
+                              rules=None, messages=None, violations=None,
+                              format=None, output=None))
+    for shape in JUICE:
+        vp = write_junk("violations.json", shape)
+        _probe(genuine, "cli.cmd_report.junk_violations",
+               cmd_report, ns(topics=topics, registry=None, groups=None,
+                              rules=None, messages=None, violations=vp,
+                              format=None, output=None))
+    for t in JUICE + ["check", "violations", "report", "schema-diff"]:
+        for f in JUICE + ["json", "csv", "markdown", "md"]:
+            _probe(genuine, "cli.cmd_export.delegate",
+                   cmd_export, ns(type=t, format=f, config=rules,
+                                  messages=msgs, topics=topics,
+                                  registry=registry, groups=groups,
+                                  output=None))
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 
