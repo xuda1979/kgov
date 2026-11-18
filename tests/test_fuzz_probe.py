@@ -794,6 +794,46 @@ def test_cli_internals_probes(tmp_path, monkeypatch):
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 
+def test_cli_load_schema_text_shorthand_probes():
+    """Short-hand ``[http://]registry/subject/version`` refs resolve against a
+    live registry; every junk wire ``schema`` shape must fold into a clean
+    return.  The wire JSON-encodes all values, get_version normalizes any
+    schema through _parse_schema_string, and the loader returns the raw (often
+    non-str) body for the downstream designed SchemaParseError — no raw crash
+    may escape the network round-trip, the missing-key fallback, or the body
+    plumbing.  Junk ref shapes must fail closed before any fetch, and unknown
+    subjects must surface as the designed CliError.
+    """
+    from kgov.cli import _load_schema_text
+    from kgov.mock_registry import MockRegistry
+
+    genuine = {}
+    for schema_value in (None, 42, ["a", "b", True],
+                         {"type": "record", "name": "R", "fields": []}):
+        with MockRegistry() as mk:
+            mk.add_subject("s", {"id": 1, "version": 1, "schema": schema_value})
+            ref = f"{mk.base_url[7:]}/s/1"  # strip http:// -> short-hand form
+            for fmt in (None, "avro", "json", 1, b"avro", ["x"]):
+                _probe(genuine, "cli._load_schema_text.short",
+                       _load_schema_text, ref, fmt)
+    # schema key missing entirely from the wire dict -> json.dumps fallback
+    with MockRegistry() as mk:
+        mk.add_subject("s", {"id": 1, "version": 1})
+        ref = f"{mk.base_url[7:]}/s/1"
+        _probe(genuine, "cli._load_schema_text.short_noschema",
+               _load_schema_text, ref, None)
+    # unknown subject -> fetch fails through the designed CliError
+    with MockRegistry() as mk:
+        ref = f"{mk.base_url[7:]}/nope/1"
+        _probe(genuine, "cli._load_schema_text.short_missing",
+               _load_schema_text, ref, None)
+    # junk ref shapes never reach the network (CliError gates keep them local)
+    for ref in JUICE:
+        _probe(genuine, "cli._load_schema_text.short_junkref",
+               _load_schema_text, ref, None)
+    assert genuine == {}, f"genuine crashes escaped: {genuine}"
+
+
 # ---------------------------------------------------------------------------
 # deep nesting
 # ---------------------------------------------------------------------------
