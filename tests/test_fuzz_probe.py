@@ -1117,6 +1117,36 @@ def test_cli_file_content_probes(tmp_path, monkeypatch):
                cmd_report, ns(topics=topics, registry=None, groups=None,
                               rules=None, messages=None, violations=vp,
                               format=None, output=None))
+    # cmd_report --rules + --messages: the load_rules_file -> validate_fixture_file
+    # branch, junk-CONTENT on either side (real fixture files exist as the gate).
+    for shape in JUICE:
+        rp = write_junk("rules.yaml", shape)
+        _probe(genuine, "cli.cmd_report.junk_rules_content",
+               cmd_report, ns(topics=topics, registry=None, groups=None,
+                              rules=rp, messages=msgs, violations=None,
+                              format=None, output=None))
+    for shape in JUICE:
+        mp = write_junk("msgs.json", shape)
+        _probe(genuine, "cli.cmd_report.junk_msgs_content",
+               cmd_report, ns(topics=topics, registry=None, groups=None,
+                              rules=rules, messages=mp, violations=None,
+                              format=None, output=None))
+    # both-sides junk plus the render path (junk --format x --output from the
+    # temp cwd so truthy-string outputs write probe files there, not the repo).
+    for rs in (b"", {1: 2}, "not yaml::", 5.5):
+        for mp in (b"", [7], "[[", {"violations": "x"}):
+            rp = write_junk("rules.yaml", rs)
+            pp = write_junk("msgs.json", mp)
+            _probe(genuine, "cli.cmd_report.junk_rules_msgs_both",
+                   cmd_report, ns(topics=topics, registry=None, groups=None,
+                                  rules=rp, messages=pp, violations=None,
+                                  format=None, output=None))
+    for f in JUICE + ["json", "csv", "text"]:
+        for o in JUICE + ["out.json", "out.csv"]:
+            _probe(genuine, "cli.cmd_report.render_format_output",
+                   cmd_report, ns(topics=topics, registry=None, groups=None,
+                                  rules=rules, messages=msgs, violations=None,
+                                  format=f, output=o))
     for t in JUICE + ["check", "violations", "report", "schema-diff"]:
         for f in JUICE + ["json", "csv", "markdown", "md"]:
             _probe(genuine, "cli.cmd_export.delegate",
