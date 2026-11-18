@@ -1053,14 +1053,19 @@ def test_broker_live_wire_probes(tmp_path, monkeypatch):
     - ``broker.list_topics``   -> BrokerConnectError (wrapped, no raw KafkaException)
     - ``broker.consumer_groups`` -> {} (designed degradation on unreachable)
     - ``cmd_topics``           -> CliError ("failed to list topics")
+    - ``cmd_check --broker``   -> CliError ("broker scan failed"), junk
+      schema_registry shapes dying at the URL gate; the truthy-str "abc"
+      reaches the (inert decoder) construction then dies at the scan
 
     Junk group_id/n/timeout values die at the pure-Python gates (fast), so the
     live-wire reach is limited to valid values; timeouts stay at 0.5s so each
     reach costs ~0.5s under socket.timeout.ms.  Truthy junk output paths with a
     raising list_topics never _write_out (the write only happens on success).
+    cmd_check has no --timeout knob, so its reach costs the full read_topic
+    default (~10s) and is capped to two representatives.
     """
     from kgov.broker import consumer_groups, list_topics, read_topic
-    from kgov.cli import cmd_topics
+    from kgov.cli import cmd_check, cmd_topics
 
     monkeypatch.chdir(tmp_path)
     genuine = {}
@@ -1092,6 +1097,24 @@ def test_broker_live_wire_probes(tmp_path, monkeypatch):
     for o in [None, "topics_out.json", 5, b"x", []]:
         ns = type("NS", (), {"bootstrap": un, "timeout": 0.5, "output": o})()
         _probe(genuine, "cli.cmd_topics.live_wire", cmd_topics, ns)
+    # cmd_check --broker: a valid broker/topic compose _validate over real
+    # read_topic.  check has no --timeout knob, so every reach costs the full
+    # read_topic default (~10s under socket.timeout.ms), and the reach is
+    # capped to two representatives.  A junk truthy-str schema_registry
+    # ("abc") passes the URL gate, is str()'d into an inert SchemaRegistryClient
+    # constructor, and dies at the scan before any decode — CliError, never a
+    # raw escape.  Junk registry values (any shape) die at the URL gate fast.
+    rules = Path(__file__).parent / "fixtures" / "rules" / "rules_scale.yaml"
+    assert rules.is_file()
+    ns_kw = dict(config=rules, topic="payments", broker=un, messages=None,
+                 max_violations=None, output=None, quiet=True)
+    _probe(genuine, "cli.cmd_check.live_wire.noreg",
+           cmd_check, type("NS", (), {**ns_kw, "schema_registry": None})())
+    _probe(genuine, "cli.cmd_check.live_wire.junkstr_reg",
+           cmd_check, type("NS", (), {**ns_kw, "schema_registry": "abc"})())
+    for reg in [0, b"x", [], 5, {"a": 1}, ""]:
+        _probe(genuine, "cli.cmd_check.live_wire.junk_reg_gate",
+               cmd_check, type("NS", (), {**ns_kw, "schema_registry": reg})())
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
     """cmd_check / cmd_report / cmd_export with junk-typed FILE CONTENTS.
 
