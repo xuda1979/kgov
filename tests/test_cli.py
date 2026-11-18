@@ -112,6 +112,29 @@ def test_schema_diff_output_md_extension_shortcut(tmp_path):
     assert "Additive" in body
 
 
+def test_schema_diff_output_json_extension_shortcut(tmp_path):
+    """README:56 documents ``--json`` 或 ``.json`` 后缀输出 JSON; the direct
+    subcommand must honour the ``.json`` output-extension shortcut
+    (cli.py:237) exactly like ``--json`` even with no explicit flag —
+    JSON written to the file, rc 0 for an additive diff."""
+    before = str(FIXTURES / "schemas" / "v1.json")
+    after = str(FIXTURES / "schemas" / "v2.json")
+    out = tmp_path / "diff.json"
+    code = main([
+        "schema-diff",
+        "--before", before,
+        "--after", after,
+        "--subject", "payments-value",
+        "-o", str(out),
+    ])
+    assert code == 0
+    body = out.read_text(encoding="utf-8")
+    assert body.lstrip().startswith("{")
+    data = json.loads(body)
+    assert data["kind"] == CompatibilityKind.ADDITIVE
+    assert data["subject"] == "payments-value"
+
+
 
 def test_schema_diff_missing_file(capsys):
     code = main(["schema-diff", "--before", "/no/such/file.json", "--after", "/nope.json"])
