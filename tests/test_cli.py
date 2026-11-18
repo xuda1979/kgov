@@ -629,6 +629,42 @@ def test_report_csv(tmp_path):
     assert out.read_text(encoding="utf-8").startswith("name,")
 
 
+def test_report_csv_full_row_values(tmp_path):
+    """README.md:130-132 documents the report CSV contract (12-column header,
+    one row per topic). test_report_csv only asserts the header prefix and
+    test_examples.py pins header + topic order at the process boundary, but the
+    per-topic data row VALUES (owner, tags joined by '|', partitions,
+    replication_factor, schema_version/schema_state from --registry,
+    last_consumed_at from --groups, the staleness decision and
+    violation_count) are never pinned through main() against
+    tests/fixtures/. This test pins the exact rendered rows."""
+    out = tmp_path / "report.csv"
+    code = main([
+        "report",
+        "--topics", str(FIXTURES / "topics" / "topics.json"),
+        "--registry", str(FIXTURES / "registry" / "registry.json"),
+        "--groups", str(FIXTURES / "subject_groups" / "consumer_groups.json"),
+        "--format", "csv",
+        "-o", str(out),
+    ])
+    assert code == 0
+    lines = out.read_text(encoding="utf-8").splitlines()
+    assert lines == [
+        "name,owner,tags,partitions,replication_factor,schema_subject,"
+        "schema_version,schema_state,latest_message_at,last_consumed_at,"
+        "stale,violation_count",
+        # registry latest version 2 + no breaking diff betwen v1/v2 -> COMPATIBLE
+        "payments,payments-team,core|critical,12,3,payments-value,2,COMPATIBLE,"
+        "2026-11-13T08:15:00+00:00,2026-11-14T07:00:00+00:00,True,0",
+        # orders v1->v2 drops a field -> BREAKING; last consumed 2026-09-20 leaks.
+        "orders,checkout-eng,core,6,3,orders-value,2,BREAKING,"
+        "2026-11-10T11:30:00+00:00,2026-09-20T10:00:00+00:00,True,0",
+        # no schema_subject -> empty pair + NONE state
+        "inventory-events,warehouse,event-log,3,2,,,NONE,"
+        "2026-10-01T00:00:00+00:00,2026-11-13T22:00:00+00:00,True,0",
+    ]
+
+
 def test_report_requires_topics(capsys):
     # argparse fails on the missing required flag before our handler runs
     code = main(["report"])
