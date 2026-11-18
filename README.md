@@ -172,29 +172,30 @@ examples/
 └── consumer_groups/        # 消费组快照
 ```
 
-用 `python -m kgov.cli`（或安装 console script 后的 `kgov`）直接体验：
+用 `python -m kgov`（与 `python -m kgov.cli` 等价；安装 console script 后也可用
+`kgov`）直接体验：
 
 ```bash
 # schema-diff：v1 → v2 为兼容演进（Additive，退出码 0）
 #              v1 → payment_breaking 为不兼容（Breaking，退出码 1）
-python -m kgov.cli schema-diff --before examples/schemas/payment_v1.json \
+python -m kgov schema-diff --before examples/schemas/payment_v1.json \
     --after examples/schemas/payment_v2.json --subject payments-value
-python -m kgov.cli schema-diff --before examples/schemas/payment_v1.json \
+python -m kgov schema-diff --before examples/schemas/payment_v1.json \
     --after examples/schemas/payment_breaking.json --subject payments-value
 
 # check：对 6 条消息执行规则，检出 8 处违规，门禁失败（退出码 1）
-python -m kgov.cli check --config examples/rules/rules.yaml \
+python -m kgov check --config examples/rules/rules.yaml \
     --messages examples/messages/payments_messages.json
 
 # report：三 topic 治理报告（schema 状态 / 陈旧度 / 违规计数）
-python -m kgov.cli report --topics examples/topics/topics.json \
+python -m kgov report --topics examples/topics/topics.json \
     --registry examples/registry/registry.json \
     --groups examples/consumer_groups/consumer_groups.json \
     --rules examples/rules/rules.yaml \
     --messages examples/messages/payments_messages.json
 
 # export：把治理报告导出为 CSV
-python -m kgov.cli export --type report --topics examples/topics/topics.json \
+python -m kgov export --type report --topics examples/topics/topics.json \
     --registry examples/registry/registry.json \
     --groups examples/consumer_groups/consumer_groups.json \
     --format csv -o report.csv
