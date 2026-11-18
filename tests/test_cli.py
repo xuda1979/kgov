@@ -940,6 +940,32 @@ def test_registry_cli_single_subject(server) -> None:
     assert [v["version"] for v in data["versions"]] == [1, 2]
 
 
+def test_registry_cli_subject_version_shape(server) -> None:
+    """README:109-110: ``--subject`` mode outputs that subject's per-version
+    id/version/compatibility/schema. test_registry_cli_single_subject pins only
+    the subject name and version numbers; this test pins the documented
+    per-version key shape (cli.py:441-447) and that each version carries its own
+    schema — v2 evolved: a record named Payment with two new nullable fields
+    over v1."""
+    code, out, _ = _run("registry", "--registry-url", server.base_url,
+                        "--subject", "payments-value")
+    assert code == 0
+    data = json.loads(out)
+    assert data["subject"] == "payments-value"
+    assert [v["version"] for v in data["versions"]] == [1, 2]
+    for version in data["versions"]:
+        assert set(version) == {"id", "version", "compatibility", "schema"}
+    v1, v2 = data["versions"]
+    assert (v1["id"], v1["compatibility"]) == (1, "BACKWARD")
+    assert v2["id"] == 2
+    assert v1["schema"]["type"] == "record"
+    assert v1["schema"]["name"] == "Payment"
+    v1_fields = [f["name"] for f in v1["schema"]["fields"]]
+    v2_fields = [f["name"] for f in v2["schema"]["fields"]]
+    assert "fee_cents" not in v1_fields
+    assert v2_fields == v1_fields + ["fee_cents", "created_at"]
+
+
 def test_registry_cli_unreachable(capsys) -> None:
     code = main(["registry", "--registry-url", "http://127.0.0.1:1"])
     assert code == 3
