@@ -523,7 +523,7 @@ def test_rules_probes():
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 
-def test_rules_internals_probes():
+def test_rules_internals_probes(tmp_path):
     """Internal rules helpers (never directly fuzzed by the top-level battery)
     must fail closed on junk: _merge_rule/_merge_fields/_validate_type/
     _validate_field_spec/_type_ok/_type_repr/_json_safe_key, and the
@@ -552,6 +552,32 @@ def test_rules_internals_probes():
     for text in ("[" * 20000 + "x", '{"a": ' * 5000 + "1" + "}" * 5000):
         _probe(genuine, "rules.load_rules_yaml.deep_nesting",
                rl.load_rules_yaml, text)
+    # load_rules_file's junk probes above die at the isinstance gate, so the
+    # read_text -> load_rules_yaml pipe is only exercised with real paths;
+    # drive every branch with existing files (junk / deep / empty / scalar
+    # content, invalid-UTF-8 bytes) plus path-shaped junk (missing, directory,
+    # embedded NUL).  Direct probe before pinning: 0 genuine escapes — every
+    # reach is a RuleSet or the designed RulesConfigError.
+    for name, raw, binary in [
+        ("ok.yaml", "version: 1\ntopic: t\nrules:\n  - field: a\n"
+                    "    type: string\n", False),
+        ("empty.yaml", "", False),
+        ("list.yaml", "- 1\n- 2\n", False),
+        ("deep.yaml", "[" * 20000 + "x", False),
+        ("garbage.yaml", "\x00\x01\xff not yaml", False),
+        ("bin.yaml", b"\x00\x01\xff\xfe", True),
+        ("uni.yaml", "version: 1\nrules: []\n".encode("utf-8"), True),
+    ]:
+        p = tmp_path / name
+        if binary:
+            p.write_bytes(raw)  # type: ignore[arg-type]
+        else:
+            p.write_text(str(raw), encoding="utf-8")
+        _probe(genuine, "rules.load_rules_file.file_branch",
+               rl.load_rules_file, p)
+    for path in (tmp_path / "nope.yaml", tmp_path, "abc\x00def.yaml"):
+        _probe(genuine, "rules.load_rules_file.path_junk",
+               rl.load_rules_file, path)
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 
