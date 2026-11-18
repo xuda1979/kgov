@@ -136,6 +136,30 @@ def test_schema_diff_output_json_extension_shortcut(tmp_path):
 
 
 
+def test_schema_diff_format_avro_success_path(capsys):
+    """README:44 documents ``--format avro|json`` as the schema *language*
+    axis (not the output format): a successful ``--format avro`` run must exit
+    0 and render the default markdown diff (no --json / no .json ext), with
+    the format echoed verbatim in the header while JSON-schema *output* pins
+    (--json / .json shortcut) stay unaffected."""
+    before = str(FIXTURES / "schemas" / "v1.json")
+    after = str(FIXTURES / "schemas" / "v2.json")
+    code = main([
+        "schema-diff",
+        "--before", before,
+        "--after", after,
+        "--subject", "payments-value",
+        "--format", "avro",
+    ])
+    out = capsys.readouterr()
+    assert code == 0
+    assert out.out.lstrip().startswith("#")
+    assert not out.out.lstrip().startswith("{")
+    assert "- Format: **avro**" in out.out
+    assert "`payments-value`" in out.out
+    assert "Additive" in out.out
+
+
 def test_schema_diff_missing_file(capsys):
     code = main(["schema-diff", "--before", "/no/such/file.json", "--after", "/nope.json"])
     assert code == 3
