@@ -126,6 +126,35 @@ def test_examples_report_states_and_violation_counts():
 
 
 # ---------------------------------------------------------------------------
+# report --format csv: the README documents `report [--format json|csv]`
+# (README.md:126); the explicit flag must yield the same CSV shape as export
+# ---------------------------------------------------------------------------
+
+
+def test_examples_report_format_csv_explicit_flag():
+    rc, out, err = _run(
+        "report",
+        "--topics", str(EXAMPLES / "topics" / "topics.json"),
+        "--registry", str(EXAMPLES / "registry" / "registry.json"),
+        "--groups", str(EXAMPLES / "consumer_groups" / "consumer_groups.json"),
+        "--rules", str(EXAMPLES / "rules" / "rules.yaml"),
+        "--messages", str(EXAMPLES / "messages" / "payments_messages.json"),
+        "--format", "csv",
+    )
+    assert rc == 0
+    lines = out.splitlines()
+    assert lines[0].split(",") == [
+        "name", "owner", "tags", "partitions", "replication_factor",
+        "schema_subject", "schema_version", "schema_state",
+        "latest_message_at", "last_consumed_at", "stale", "violation_count",
+    ]
+    # header + one data row per topic, same order as the export pin
+    assert [ln.split(",")[0] for ln in lines[1:]] == [
+        "payments", "orders", "inventory-events",
+    ]
+
+
+# ---------------------------------------------------------------------------
 # export: governance report as CSV with the documented header + 3 rows
 # ---------------------------------------------------------------------------
 
