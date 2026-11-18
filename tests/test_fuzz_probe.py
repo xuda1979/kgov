@@ -187,6 +187,53 @@ def test_schema_diff_probes():
         _probe(genuine, "schema_diff.diff_avro", sd.diff_avro, junk, junk)
         _probe(genuine, "schema_diff.diff_json_schema",
                sd.diff_json_schema, junk, junk)
+    # diff_schemas's format-dispatch legs are never genuinely driven by the
+    # junk loop above (its dict/text shapes all guess AVRO via the parse_schema
+    # fallback): Json-Schema-structured pairs ($schema/properties drive the
+    # diff_json_schema leg), cross-format pairs (designed SchemaParseError),
+    # structured AVRO pairs (diff_avro leg), and the forced ``format``
+    # parameter (junk formats fall through to structure guessing).  Direct
+    # probe before pinning: 0 genuine escapes.
+    for old, new in [
+        ({"$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {"p": {"type": "string"}, "q": {"type": "integer"}},
+          "required": ["p"]},
+         {"$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object", "properties": {"p": {"type": "string"}}}),
+        ({"$schema": "x", "type": "object",
+          "properties": {"p": {"type": "number"}}},
+         {"$schema": "x", "type": "object",
+          "properties": {"p": {"type": "string"}}}),
+        ({"type": "record", "name": "R",
+          "fields": [{"name": "a", "type": "int"}]},
+         {"type": "record", "name": "R",
+          "fields": [{"name": "a", "type": "long"},
+                     {"name": "b", "type": "string"}]}),
+        # cross-format: designed SchemaParseError, not a raw crash
+        ({"type": "record", "name": "R", "fields": []},
+         {"$schema": "x", "type": "object", "properties": {}}),
+        ({"$schema": "x", "type": "object", "properties": {}},
+         {"type": "record", "name": "R", "fields": []}),
+    ]:
+        _probe(genuine, "schema_diff.diff_schemas.dispatch",
+               sd.diff_schemas, old, new)
+    for fmt in ("json", "avro", None, 1, b"json", "bogus", ""):
+        _probe(genuine, "schema_diff.diff_schemas.fmt", sd.diff_schemas,
+               {"type": "record", "name": "R",
+                "fields": [{"name": "a", "type": "int"}]},
+               {"type": "record", "name": "R",
+                "fields": [{"name": "a", "type": "long"}]},
+               "record", 1, 2, None, None, fmt)
+    # junk-but-guessable structured pairs (properties/$schema/type keys) that
+    # still dispatch into one of the walkers and must fail closed there
+    for a in ({"properties": None}, {"$schema": 1, "properties": {}},
+              {"type": "object",
+               "properties": {"p": {"type": [None, {}, 1]}}},
+              {"type": "record", "name": "R",
+               "fields": [{"name": "a", "type": [None, {}, []]}]}):
+        _probe(genuine, "schema_diff.diff_schemas.junkguess",
+               sd.diff_schemas, a, a)
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 
