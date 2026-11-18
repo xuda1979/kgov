@@ -142,6 +142,39 @@ def test_schema_diff_compact_registry_ref(server) -> None:
     assert any("fee_cents" in r["path"] for r in data["results"])
 
 
+def test_schema_diff_full_http_url_refs(server) -> None:
+    """The README's documented form — both refs as full
+    ``http://registry/subjects/X/versions/N`` URLs — must fetch the
+    Confluent-wire ``data["schema"]`` payload over real HTTP at the main()
+    boundary: additive payments-value 1->2 exits 0, breaking orders-value
+    1->2 exits 1, and the fetched (not local) schema text drives the diff."""
+    base = server.base_url
+    code, out, _ = _run(
+        "schema-diff",
+        "--before", f"{base}/subjects/payments-value/versions/1",
+        "--after", f"{base}/subjects/payments-value/versions/2",
+        "--json",
+    )
+    assert code == 0
+    data = json.loads(out)
+    assert data["subject"] == "record"  # --subject not given: default
+    assert data["kind"] == CompatibilityKind.ADDITIVE
+    assert any("fee_cents" in r["path"] for r in data["results"])
+
+    # A version pair the mock marks BREAKING must gate exit 1 over the same
+    # full-URL path (orders-value v2 removed a required field).
+    code, out, _ = _run(
+        "schema-diff",
+        "--before", f"{base}/subjects/orders-value/versions/1",
+        "--after", f"{base}/subjects/orders-value/versions/2",
+        "--json",
+    )
+    assert code == 1
+    data = json.loads(out)
+    assert data["kind"] == CompatibilityKind.BREAKING
+    assert data["compatible"] is False
+
+
 # ---------------------------------------------------------------------------
 # check
 # ---------------------------------------------------------------------------
