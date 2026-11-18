@@ -923,6 +923,58 @@ def test_cli_load_schema_text_shorthand_probes():
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 
+def test_cli_live_wire_probes(tmp_path, monkeypatch):
+    """The CLI command layer over a live MockRegistry must fail closed.
+
+    cmd_registry with a live --registry-url attaches a real client, so junk
+    subject x timeout values drive the composed arg -> wire -> mock -> parse
+    chain that the fast-refused base probes never reach.  Junk output paths
+    are probed from a temp cwd so truthy-string paths write probe files there,
+    never the repo tree.
+
+    cmd_schema_diff with short-hand refs on both sides resolves both schemas
+    against the live mock, exercising _load_schema_text -> diff_schemas ->
+    _write_out with a junk value on each namespace option in turn.
+    """
+    from kgov.cli import cmd_registry, cmd_schema_diff
+    from kgov.mock_registry import MockRegistry
+
+    monkeypatch.chdir(tmp_path)
+    genuine = {}
+    with MockRegistry() as mk:
+        mk.add_subject("s", {"id": 1, "version": 1, "schema": {"type": "string"}},
+                       {"id": 2, "version": 2, "schema": {"type": "long"}})
+        # cmd_registry: live base, junk subject x junk timeout
+        for subj in JUICE + ["s", "a/b", "a b", "x" * 300, "%2F"]:
+            for t in (None, 5, 0.5, -1, "x", float("inf")):
+                ns = type("NS", (), {"registry_url": mk.base_url, "timeout": t,
+                                     "subject": subj, "output": None})()
+                _probe(genuine, "cli.cmd_registry.live_wire",
+                       cmd_registry, ns)
+        # cmd_registry: junk output paths with a valid subject
+        for o in JUICE + ["reg_out.json"]:
+            ns = type("NS", (), {"registry_url": mk.base_url, "timeout": 5,
+                                 "subject": "s", "output": o})()
+            _probe(genuine, "cli.cmd_registry.live_wire_output",
+                   cmd_registry, ns)
+        # cmd_schema_diff: short-hand refs both sides, junk per-option values
+        ref1 = f"{mk.base_url[7:]}/s/1"
+        ref2 = f"{mk.base_url[7:]}/s/2"
+        base = {"output": None, "json": False, "markdown": False,
+                "subject": "rec", "before_version": 1, "after_version": 2,
+                "before_id": None, "after_id": None, "format": None}
+        for before, after in ((ref1, ref2), (ref2, ref1), (ref1, ref1)):
+            for k in base:
+                for j in (None, 1, 3.14, b"x", [], {}, "s", True):
+                    n = dict(base)
+                    n[k] = j
+                    ns = type("NS", (), {"before": before, "after": after,
+                                         **n})()
+                    _probe(genuine, "cli.cmd_schema_diff.live_wire",
+                           cmd_schema_diff, ns)
+    assert genuine == {}, f"genuine crashes escaped: {genuine}"
+
+
 # ---------------------------------------------------------------------------
 # deep nesting
 # ---------------------------------------------------------------------------
