@@ -89,6 +89,30 @@ def test_schema_diff_breaking_exit_1(tmp_path):
     assert data["compatible"] is False
 
 
+def test_schema_diff_output_md_extension_shortcut(tmp_path):
+    """README:45 documents ``[-o diff.md|diff.json]``; the direct subcommand
+    must honour the ``.md`` output-extension shortcut (cli.py:238) exactly
+    like ``--markdown`` — markdown written to the file, rc 0 for an additive
+    diff. The export route pins the same branch; this pins the direct route
+    the README documents."""
+    before = str(FIXTURES / "schemas" / "v1.json")
+    after = str(FIXTURES / "schemas" / "v2.json")
+    out = tmp_path / "diff.md"
+    code = main([
+        "schema-diff",
+        "--before", before,
+        "--after", after,
+        "--subject", "payments-value",
+        "-o", str(out),
+    ])
+    assert code == 0
+    body = out.read_text(encoding="utf-8")
+    assert body.lstrip().startswith("#")
+    assert not body.lstrip().startswith("{")
+    assert "Additive" in body
+
+
+
 def test_schema_diff_missing_file(capsys):
     code = main(["schema-diff", "--before", "/no/such/file.json", "--after", "/nope.json"])
     assert code == 3
