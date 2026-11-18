@@ -192,6 +192,42 @@ def test_schema_diff_full_url_fetch_failure_exits_3(capsys):
     assert out.out == ""
 
 
+def test_schema_diff_full_url_json_scalar_body_fails_closed():
+    """A full-URL ref whose registry answers a JSON *non-dict* body (null,
+    number, bool, list) previously raw-crashed _load_schema_text with a bare
+    TypeError ("schema" membership test on a non-container) escaping main().
+    The loader now renders any non-str/non-wire-dict body as JSON text, so
+    every scalar body must fold into a designed exit (0/1/3) with no
+    traceback."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):  # keep test output quiet
+            return
+
+        def do_GET(self):
+            body = self.server.body
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    for body in (b"null", b"42", b"true", b'["payments-value"]'):
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        srv.body = body
+        thread = threading.Thread(target=srv.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = f"http://127.0.0.1:{srv.server_address[1]}/subjects/x/versions/1"
+            code, _, err = _run("schema-diff", "--before", url, "--after", url)
+        finally:
+            srv.shutdown()
+            srv.server_close()
+        assert code in (0, 1, 3), f"body {body!r}: exit {code}"
+        assert "Traceback" not in err, f"body {body!r}: raw crash leaked"
+
+
 # ---------------------------------------------------------------------------
 # check
 # ---------------------------------------------------------------------------

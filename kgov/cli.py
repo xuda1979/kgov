@@ -170,10 +170,14 @@ def _load_schema_text(ref: str, fmt: Optional[str]):
             raise CliError(f"cannot fetch schema from {ref}: {exc}") from exc
         if isinstance(data, str):
             body = data
-        elif "schema" in data:
+        elif isinstance(data, dict) and "schema" in data:
             # Confluent wire for /subjects/{subject}/versions/{version}
             body = data["schema"]
         else:
+            # any other JSON body (list, scalar, plain dict): a non-dict body
+            # would raw-crash the "schema" membership test above with a bare
+            # TypeError escaping main(); render it as JSON text so the
+            # downstream parse fails closed with a designed error instead
             body = json.dumps(data, ensure_ascii=False)
         return body, fmt
 
