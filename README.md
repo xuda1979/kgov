@@ -186,3 +186,10 @@ KGOV_LIVE_BROKER=localhost:9092 python -m pytest tests/test_broker.py
 | 1 | 门禁失败（违规、Breaking schema diff） |
 | 2 | 用法/配置错误（argparse / CLI 校验） |
 | 3 | 运行时错误（文件缺失、解析失败） |
+
+## 授权与协议
+
+双授权：源代码以 **GNU AGPL v3.0** 开源（见 [`LICENSE`](LICENSE)）。任何
+商业或营利性使用，或将其用于向他人销售/授权的产品与服务，均须事先获得
+著作权人（许达，中国移动研究院）的书面商业授权，详见
+[`COMMERCIAL-LICENSE.md`](COMMERCIAL-LICENSE.md)。
