@@ -363,6 +363,45 @@ def test_check_gate_exceeded_exit_1(tmp_path):
     assert code == 1
 
 
+def test_check_gate_exact_equality_and_payload_shape(tmp_path, capsys):
+    """cli.py:366 gates with a strict len(violations) > max_v comparison, so a
+    gate set exactly equal to the violation count is within the gate (9
+    violations, --max-violations 9 -> rc 0) while one below fails (8 -> rc 1).
+    test_check_within_gate_exit_0 (10) and test_check_gate_exceeded_exit_1 (3)
+    pin both sides but never the exact-equality boundary, the full result
+    payload key set, or the stderr summary line the README's CI-gate story
+    relies on."""
+    from datetime import datetime
+
+    rules = FIXTURES / "rules" / "rules_scale.yaml"
+    msgs = FIXTURES / "messages" / "payments_messages.json"
+    out = tmp_path / "result.json"
+
+    code = main(["check", "--config", str(rules), "--messages", str(msgs),
+                 "--max-violations", "9", "-o", str(out)])
+    assert code == 0  # exact equality is within the gate
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert set(data) == {"ok", "gate", "violation_count", "rule", "topic",
+                         "violations", "generated_at"}
+    assert data["ok"] is False
+    assert data["gate"] == 9
+    assert data["violation_count"] == 9
+    assert data["rule"] == "payments-constraints"
+    assert data["topic"] == "payments"
+    assert len(data["violations"]) == 9
+    generated_at = data["generated_at"]
+    parsed = datetime.fromisoformat(generated_at)
+    assert parsed.tzinfo is not None and parsed.utcoffset().total_seconds() == 0
+    assert "ok=False violations=9 gate=9 -> PASS" in capsys.readouterr().err
+
+    code = main(["check", "--config", str(rules), "--messages", str(msgs),
+                 "--max-violations", "8", "-o", str(out)])
+    assert code == 1  # one below the violation count fails
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["gate"] == 8
+    assert "ok=False violations=9 gate=8 -> FAIL" in capsys.readouterr().err
+
+
 def test_check_requires_data_source(capsys):
     rules = FIXTURES / "rules" / "rules_scale.yaml"
     code = main(["check", "--config", str(rules)])
