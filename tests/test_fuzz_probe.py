@@ -329,6 +329,37 @@ def test_registry_probes():
     assert genuine == {}, f"genuine crashes escaped: {genuine}"
 
 
+def test_registry_live_wire_junk_axis_probes():
+    """Composed arg->wire->mock->wire->parse round-trip with junk subject/
+    version args must fail closed as the designed RegistryError.
+
+    The fast-refused base probes above never reach the network, so they miss
+    the join of _quote_path, HTTP routing, the mock accessors, _wire_schema
+    serialization, and the client response normalization.  Driving a live
+    MockRegistry with junk args exercises that whole path at once.
+    """
+    from kgov.mock_registry import MockRegistry
+    from kgov.registry import SchemaRegistryClient
+
+    genuine = {}
+    with MockRegistry() as mk:
+        mk.add_subject("s", {"id": 1, "version": 1, "schema": {"type": "string"}},
+                       {"id": 2, "version": 2, "schema": {"type": "long"}})
+        c = SchemaRegistryClient(mk.base_url, timeout=5)
+        subjects = JUICE + ["a/b", "a b", "s", "x" * 300, "%2F"]
+        versions = JUICE + ["latest", "1", 1, 1.0, True, b"1", "999"]
+        for s in subjects:
+            for v in versions:
+                _probe(genuine, "registry.get_version.live_wire",
+                       c.get_version, s, v)
+        for s in subjects:
+            _probe(genuine, "registry.get_versions.live_wire",
+                   c.get_versions, s)
+            _probe(genuine, "registry.get_latest.live_wire",
+                   c.get_latest, s)
+    assert genuine == {}, f"genuine crashes escaped: {genuine}"
+
+
 # ---------------------------------------------------------------------------
 # rules
 # ---------------------------------------------------------------------------
