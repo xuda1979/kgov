@@ -213,7 +213,16 @@ def test_schema_diff_full_url_json_scalar_body_fails_closed():
             self.end_headers()
             self.wfile.write(body)
 
-    for body in (b"null", b"42", b"true", b'["payments-value"]'):
+    # scalar/junk bodies: null, int, bool, list (pre-fix raw TypeError), plus
+    # the further shapes that must also fail closed at the URL boundary — a
+    # JSON string body (parses downstream as invalid schema text), non-JSON
+    # garbage / empty bodies (JSONDecodeError is wrapped by the fetch-failure
+    # CliError), a wire dict whose "schema" value is itself junk (fails in the
+    # schema parse, not the loader), and a plain dict with no "schema" key
+    # (rendered as JSON text and diffed against itself: designed exit 0).
+    for body in (b"null", b"42", b"true", b'["payments-value"]',
+                 b'"payments-value"', b'this is not json', b'',
+                 b'{"schema": 42}', b'{"id": 3, "version": 2}'):
         srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         srv.body = body
         thread = threading.Thread(target=srv.serve_forever, daemon=True)
