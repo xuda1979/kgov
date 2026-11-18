@@ -2153,6 +2153,32 @@ def test_topics_dump_shape_pins_rich_metadata(monkeypatch, capsys):
     assert topics[1]["latest_message_at"] is None
 
 
+def test_topics_cli_output_file_success_writes_payload(monkeypatch, tmp_path) -> None:
+    """README:115: ``kgov topics --bootstrap localhost:9092 [-o topics.json]``
+    documents the -o flag writing topics output to a file. The fail-closed legs
+    and the valid-path write are pinned on the direct handler by
+    test_cmd_topics_output_write_fails_closed, and dispatch (without -o) by
+    test_topics_dispatch_exit_codes; nothing pins the documented -o success
+    route at the main() boundary. This test does: exit 0 with the same rendered
+    payload (top-level ``{"topics", "generated_at"}``) in the file as the
+    stdout route emits."""
+    def rich_list_topics(bootstrap, timeout=10.0):
+        return ["payments", "orders"]
+
+    monkeypatch.setattr("kgov.broker.list_topics", rich_list_topics)
+    out_path = tmp_path / "topics.json"
+    code, _, _ = _run("topics", "--bootstrap", "127.0.0.1:9092",
+                      "-o", str(out_path))
+    assert code == 0
+    data = json.loads(out_path.read_text(encoding="utf-8"))
+    assert set(data) == {"topics", "generated_at"}
+    assert data["topics"] == ["payments", "orders"]
+    # file content identical to what the no-flag stdout route renders
+    code, out, _ = _run("topics", "--bootstrap", "127.0.0.1:9092")
+    assert code == 0
+    assert json.loads(out) == data
+
+
 def test_load_schema_text_tolerates_junk_refs_fail_closed():
     """_load_schema_text (the schema-diff before/after ref loader) is the one
     public cli helper Fixes 22-28 never probed. Every junk ref class must fold
