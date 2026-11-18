@@ -646,6 +646,35 @@ def test_report_violations_junk_shape_tolerated(tmp_path, capsys):
     assert "file not found" in capsys.readouterr().err
 
 
+def test_report_violations_accumulates_per_topic_counts(tmp_path, capsys):
+    """README.md:126 documents --violations violations.json as an alternate
+    source to --rules --messages; the four existing --violations pins are all
+    junk legs (non-UTF-8, non-string topic, wrapper/junk shapes) and never pin
+    the positive path. A well-formed flat-list file must accumulate per-topic
+    violation_count for matching topics only, and the dict-wrapper form must
+    behave identically to the flat list (report._count_violations per-topic
+    counting reached through the CLI boundary)."""
+    topics = str(FIXTURES / "topics" / "topics.json")
+    flat = tmp_path / "vio_flat.json"
+    flat.write_text('[{"topic": "payments", "field": "amount_cents"}, '
+                    '{"topic": "payments", "field": "currency"}, '
+                    '{"topic": "orders", "field": "x"}]', encoding="utf-8")
+    code = main(["report", "--topics", topics, "--violations", str(flat)])
+    assert code == 0
+    data = json.loads(capsys.readouterr().out)
+    counts = {t["name"]: t["violation_count"] for t in data["topics"]}
+    assert counts == {"payments": 2, "orders": 1, "inventory-events": 0}
+
+    wrap = tmp_path / "vio_wrap.json"
+    wrap.write_text('{"violations": [{"topic": "payments", "message": "a"}, '
+                    '{"topic": "payments", "message": "b"}]}', encoding="utf-8")
+    code = main(["report", "--topics", topics, "--violations", str(wrap)])
+    assert code == 0
+    data = json.loads(capsys.readouterr().out)
+    counts = {t["name"]: t["violation_count"] for t in data["topics"]}
+    assert counts == {"payments": 2, "orders": 0, "inventory-events": 0}
+
+
 def test_report_registry_junk_versions_exit_0(tmp_path, capsys):
     """A registry subject whose latest version entry is non-dict junk must not
     crash (exit 0); an earlier valid mapping is still honored."""
