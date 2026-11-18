@@ -160,6 +160,31 @@ def test_schema_diff_format_avro_success_path(capsys):
     assert "Additive" in out.out
 
 
+def test_schema_diff_format_json_success_path(capsys):
+    """README:44 documents ``--format avro|json`` as the schema *language*
+    axis (not the output format): the ``--format json`` member of the pair is
+    symmetric to ``--format avro`` and must exit 0 with the default markdown
+    diff echo ``Format: **json**`` verbatim (no --json / no .json ext), the
+    subject backticked, while JSON-schema *output* pins stay unaffected. The
+    schema can still be the Avro v1/v2 fixtures: forced ``json`` parses them
+    via the generic JSON path (parse_schema cli.py:137) and yields the
+    Non-Breaking empty-diff summary."""
+    code = main([
+        "schema-diff",
+        "--before", str(FIXTURES / "schemas" / "v1.json"),
+        "--after", str(FIXTURES / "schemas" / "v2.json"),
+        "--subject", "payments-value",
+        "--format", "json",
+    ])
+    out = capsys.readouterr()
+    assert code == 0
+    assert out.out.lstrip().startswith("#")
+    assert not out.out.lstrip().startswith("{")
+    assert "- Format: **json**" in out.out
+    assert "`payments-value`" in out.out
+    assert "Non-Breaking" in out.out
+
+
 def test_schema_diff_missing_file(capsys):
     code = main(["schema-diff", "--before", "/no/such/file.json", "--after", "/nope.json"])
     assert code == 3
