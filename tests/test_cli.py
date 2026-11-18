@@ -1666,6 +1666,42 @@ def test_module_entry_exit_code_contract():
     assert _run_module("schema-diff", "--before", v1, "--after", v2) == 0
 
 
+def test_module_package_entry_matches_cli_entry():
+    """``python -m kgov`` (kgov/__main__.py) must be interchangeable with the
+    documented ``python -m kgov.cli`` path and the installed ``kgov`` console
+    script: same version output, same exit-code contract. Otherwise README
+    examples and the pyproject script alias can disagree on the entry point."""
+    import subprocess
+    import sys
+
+    def run(module: str, *argv: str) -> tuple[int, str, str]:
+        proc = subprocess.run(
+            [sys.executable, "-m", module, *argv],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parent.parent,
+            timeout=60,
+        )
+        return proc.returncode, proc.stdout, proc.stderr
+
+    # version surface identical to kgov.cli
+    rc_pkg, out_pkg, _ = run("kgov", "--version")
+    rc_cli, out_cli, _ = run("kgov.cli", "--version")
+    assert rc_pkg == rc_cli == 0
+    assert out_pkg == out_cli
+
+    # argument-parsing exit codes match too (empty argv -> usage 2)
+    assert run("kgov")[0] == run("kgov.cli")[0] == 2
+
+    # schema-diff exit-code contract through the package entry
+    v1 = str(FIXTURES / "schemas" / "v1.json")
+    v2 = str(FIXTURES / "schemas" / "v2.json")
+    assert run("kgov", "schema-diff", "--before", v1, "--after", v2)[0] == 0
+    before = str(FIXTURES / "schemas" / "breaking_before.json")
+    after = str(FIXTURES / "schemas" / "breaking_after.json")
+    assert run("kgov", "schema-diff", "--before", before, "--after", after)[0] == 1
+
+
 def test_version_flag_and_pyproject_consistency():
     """The ``kgov --version`` flag reports the package version and is the one
     printed surface tied to ``kgov/__init__.py.__version__``. That constant is
