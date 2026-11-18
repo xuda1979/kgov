@@ -932,6 +932,33 @@ def test_registry_cli_full(server) -> None:
     assert set(data["subjects"]) == {"orders-value", "payments-value"}
 
 
+def test_registry_cli_full_dump_shape(server) -> None:
+    """README:109: without ``--subject`` the full-dump is
+    ``{"subjects": {...}, "generated_at": ...}``. test_registry_cli_full pins
+    only the subject key set; this test pins the documented top-level key set,
+    a UTC ISO-8601 ``generated_at`` (Z-handling as in report._parse_dt), and
+    that each subject maps to per-version id/version/compatibility/schema
+    entries in ascending version order."""
+    from datetime import datetime
+
+    code, out, _ = _run("registry", "--registry-url", server.base_url)
+    assert code == 0
+    data = json.loads(out)
+    assert set(data) == {"subjects", "generated_at"}
+    generated_at = data["generated_at"]
+    assert isinstance(generated_at, str)
+    dt_text = generated_at[:-1] + "+00:00" if generated_at.endswith("Z") else generated_at
+    parsed = datetime.fromisoformat(dt_text)
+    assert parsed.tzinfo is not None and parsed.utcoffset().total_seconds() == 0
+    subjects = data["subjects"]
+    assert set(subjects) == {"orders-value", "payments-value"}
+    orders = subjects["orders-value"]
+    assert [v["version"] for v in orders] == [1, 2]
+    assert [v["compatibility"] for v in orders] == ["BREAKING", "BREAKING"]
+    for version in orders:
+        assert set(version) == {"id", "version", "compatibility", "schema"}
+
+
 def test_registry_cli_single_subject(server) -> None:
     code, out, _ = _run("registry", "--registry-url", server.base_url, "--subject", "payments-value")
     assert code == 0
