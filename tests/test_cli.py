@@ -1740,6 +1740,65 @@ def test_cmd_topics_output_write_fails_closed(monkeypatch, tmp_path):
     assert data["topics"] == ["payments"]
 
 
+def test_topics_dump_shape_pins_rich_metadata(monkeypatch, capsys):
+    """README:118: ``kgov topics --bootstrap`` pulls "topic 名称、分区数、副本
+    因子". test_topics_dispatch_exit_codes stubs list_topics with bare name
+    strings, so nothing pins the documented rich per-topic shape that broker.
+    list_topics actually mirrors ({name, partitions, replication_factor, owner,
+    tags, latest_message_at}) nor the top-level ``{"topics", "generated_at"}``
+    key set at the CLI boundary. This test stubs the real client-mirror shape
+    and pins both the pass-through payload keys and a UTC ISO-8601
+    generated_at (same Z-normalization as report._parse_dt)."""
+    from datetime import datetime
+
+    def rich_list_topics(bootstrap, timeout=10.0):
+        return [
+            {
+                "name": "payments",
+                "partitions": 6,
+                "replication_factor": 3,
+                "owner": "payments-team",
+                "tags": ["core"],
+                "latest_message_at": "2026-11-17T08:00:00Z",
+            },
+            {
+                "name": "orders",
+                "partitions": 1,
+                "replication_factor": 1,
+                "owner": "",
+                "tags": [],
+                "latest_message_at": None,
+            },
+        ]
+
+    monkeypatch.setattr("kgov.broker.list_topics", rich_list_topics)
+    assert main(["topics", "--bootstrap", "127.0.0.1:9092"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert set(data) == {"topics", "generated_at"}
+    generated_at = data["generated_at"]
+    assert isinstance(generated_at, str)
+    dt_text = generated_at[:-1] + "+00:00" if generated_at.endswith("Z") else generated_at
+    parsed = datetime.fromisoformat(dt_text)
+    assert parsed.tzinfo is not None and parsed.utcoffset().total_seconds() == 0
+
+    topics = data["topics"]
+    assert [t["name"] for t in topics] == ["payments", "orders"]
+    payments = topics[0]
+    assert set(payments) == {
+        "name",
+        "partitions",
+        "replication_factor",
+        "owner",
+        "tags",
+        "latest_message_at",
+    }
+    assert payments["partitions"] == 6 and payments["replication_factor"] == 3
+    assert payments["owner"] == "payments-team" and payments["tags"] == ["core"]
+    assert payments["latest_message_at"] == "2026-11-17T08:00:00Z"
+    assert topics[1]["partitions"] == 1 and topics[1]["replication_factor"] == 1
+    assert topics[1]["latest_message_at"] is None
+
+
 def test_load_schema_text_tolerates_junk_refs_fail_closed():
     """_load_schema_text (the schema-diff before/after ref loader) is the one
     public cli helper Fixes 22-28 never probed. Every junk ref class must fold
