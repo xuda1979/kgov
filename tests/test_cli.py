@@ -875,6 +875,49 @@ def test_schema_diff_non_utf8_exit_3(tmp_path, capsys):
     assert "not valid UTF-8" in capsys.readouterr().err
 
 
+def test_check_bad_yaml_config_invalid_yaml_exit_3(tmp_path, capsys):
+    """A --config whose text fails yaml.safe_load (a YAML *syntax* error such
+    as an unclosed quote or a tab indent) must exit 3 cleanly, not a raw
+    yaml.YAMLError traceback escaping main(). RulesConfigError from
+    rules.py:100 is caught by cmd_check (cli.py:339-340) as the clean CliError
+    "bad rules config: invalid YAML: {exc}". The pinned config ladders
+    (test_check_non_utf8_rules_exit_3:832, test_check_non_numeric_range_bound_
+    exit_3:844, mapping/rules-structure gates) never exercise a *syntax*
+    failure: grep "invalid YAML" across tests/ has zero matches. Reachable
+    offline (pure parse, no network)."""
+    bad = tmp_path / "rules.yaml"
+    bad.write_text('version: 1\ntopic: payments\nfields:\n'
+                   '  amount_cents:\n    type: "unclosed\n', encoding="utf-8")
+    code = main(["check", "--config", str(bad),
+                 "--messages", str(FIXTURES / "messages" / "payments_messages.json")])
+    out, err = capsys.readouterr()
+    assert code == 3, err
+    assert out == "", out
+    assert "bad rules config: invalid YAML:" in err, err
+    assert "Traceback" not in err, err
+
+
+def test_report_bad_yaml_rules_invalid_yaml_exit_3(tmp_path, capsys):
+    """The report --rules/--messages route parses the rules file via
+    load_rules_file (cli.py:504); a YAML *syntax* error raises
+    RulesConfigError("invalid YAML: {exc}") (rules.py:100), caught by
+    cmd_report (cli.py:506-507) as the clean CliError "bad rules/messages:
+    invalid YAML: ...". The report fixture ladders never exercise a syntax
+    failure. Reachable offline; each leg exits 3 with out=="" and no
+    Traceback."""
+    bad = tmp_path / "rules.yaml"
+    bad.write_text('version: 1\ntopic: payments\nfields:\n'
+                   '  amount_cents:\n    type: "unclosed\n', encoding="utf-8")
+    code = main(["report", "--topics", str(FIXTURES / "topics" / "topics.json"),
+                 "--rules", str(bad),
+                 "--messages", str(FIXTURES / "messages" / "payments_messages.json")])
+    out, err = capsys.readouterr()
+    assert code == 3, err
+    assert out == "", out
+    assert "bad rules/messages: invalid YAML:" in err, err
+    assert "Traceback" not in err, err
+
+
 def test_check_broker_scan_failure_exit_3(capsys, monkeypatch):
     """A broker scan that fails (unreachable cluster) must exit 3 with a clean
     error — never pass the gate with zero violations."""
