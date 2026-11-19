@@ -1242,6 +1242,101 @@ def test_report_cli_output_file_success_writes_json(tmp_path, monkeypatch) -> No
     assert file_text == out.rstrip("\n")
 
 
+def test_report_fixture_output_mode_precedence(tmp_path):
+    """README:127 documents report's ``[--format json|csv] [-o report.json|
+    report.csv]`` output axes; when both signals are given they can conflict.
+    report resolves deterministically (cli.py:525-528): a ``.csv`` **extension**
+    on -o coerces the format to csv regardless of an explicit ``--format json``
+    (the same json-wins style rule command register pins for schema-diff, here
+    csv-wins), while an explicit ``--format csv`` is NOT undone by a ``.json``
+    extension — only the ``.csv`` suffix coerces and the match is
+    case-sensitive (``x.CSV`` falls through to json). Pins that precedence at
+    the main() boundary (file content, not just the exit code) so a future
+    reorder of the fmt/output branches cannot silently flip which output
+    format wins when the user mixes signals."""
+    base = ["report", "--topics", str(FIXTURES / "topics" / "topics.json"),
+            "--registry", str(FIXTURES / "registry" / "registry.json"),
+            "--groups", str(FIXTURES / "subject_groups" / "consumer_groups.json")]
+
+    # reference CSV rows (report route) for content assertions
+    _, csv_out, _ = _run(*base, "--format", "csv")
+    csv_lines = csv_out.splitlines()
+    assert csv_lines[0].startswith("name,")
+
+    # --format csv -o x.json: the explicit format holds (json ext does NOT
+    # coerce back); the file is the csv render with \n row endings
+    mix_path = tmp_path / "precedence.json"
+    code, out, err = _run(*base, "--format", "csv", "-o", str(mix_path))
+    assert code == 0
+    assert out == ""
+    assert err == ""
+    file_text = mix_path.read_text(encoding="utf-8")
+    assert file_text.splitlines() == csv_lines
+    assert "\r" not in file_text
+    assert not file_text.lstrip().startswith("{")
+
+    # --format json -o x.csv: the .csv extension wins (csv render)
+    ext_path = tmp_path / "precedence.csv"
+    code, out, err = _run(*base, "--format", "json", "-o", str(ext_path))
+    assert code == 0
+    assert out == ""
+    assert err == ""
+    ext_text = ext_path.read_text(encoding="utf-8")
+    assert ext_text.splitlines() == csv_lines
+    assert "\r" not in ext_text
+
+    # no explicit format + .csv extension: csv is chosen by extension alone
+    nofmt_path = tmp_path / "nofmt.csv"
+    code, out, err = _run(*base, "-o", str(nofmt_path))
+    assert code == 0
+    assert out == ""
+    assert err == ""
+    assert nofmt_path.read_text(encoding="utf-8").splitlines() == csv_lines
+
+    # case-sensitive suffix match: x.CSV is NOT csv (falls through to json)
+    case_path = tmp_path / "uppercase.CSV"
+    code, out, err = _run(*base, "--format", "json", "-o", str(case_path))
+    assert code == 0
+    assert out == ""
+    assert err == ""
+    assert case_path.read_text(encoding="utf-8").lstrip().startswith("{")
+
+
+def test_export_report_output_mode_precedence_inherits(tmp_path):
+    """cmd_export routes --type report to cmd_report (cli.cmd_export:539-572),
+    so the export route must inherit report's csv-wins output-mode precedence
+    (cli.py:525-528): a ``.csv`` -o extension coerces a conflicting explicit
+    ``--format json`` to csv, and an explicit ``--format csv`` is not undone
+    by a ``.json`` extension. The direct report route is pinned by
+    test_report_fixture_output_mode_precedence; the two conflict legs through
+    the export boundary never were."""
+    exp = ["export", "--type", "report",
+           "--topics", str(FIXTURES / "topics" / "topics.json"),
+           "--registry", str(FIXTURES / "registry" / "registry.json"),
+           "--groups", str(FIXTURES / "subject_groups" / "consumer_groups.json")]
+
+    _, rep_csv, _ = _run("report",
+                         "--topics", str(FIXTURES / "topics" / "topics.json"),
+                         "--registry", str(FIXTURES / "registry" / "registry.json"),
+                         "--groups", str(FIXTURES / "subject_groups" / "consumer_groups.json"),
+                         "--format", "csv")
+    csv_lines = rep_csv.splitlines()
+
+    ext_path = tmp_path / "export.csv"
+    code, out, err = _run(*exp, "--format", "json", "-o", str(ext_path))
+    assert code == 0
+    assert out == ""
+    assert err == ""
+    assert ext_path.read_text(encoding="utf-8").splitlines() == csv_lines
+
+    mix_path = tmp_path / "export.json"
+    code, out, err = _run(*exp, "--format", "csv", "-o", str(mix_path))
+    assert code == 0
+    assert out == ""
+    assert err == ""
+    assert mix_path.read_text(encoding="utf-8").splitlines() == csv_lines
+
+
 def test_report_requires_topics(capsys):
     # argparse fails on the missing required flag before our handler runs
     code = main(["report"])
