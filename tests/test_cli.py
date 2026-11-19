@@ -28,6 +28,26 @@ def _run(*argv: str) -> tuple[int, str, str]:
     return code, stdout.getvalue(), stderr.getvalue()
 
 
+def _freeze_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Freeze kgov.model's wall clock so generated_at-bearing payloads render
+    identically across separate main() runs. now_utc_iso() (kgov/model.py:18)
+    stamps a fresh datetime.now() on every render, so any two-render identity
+    pin (stdout leg vs -o leg) can cross a second boundary and flake
+    (observed in the registry full-dump pin: 04:03:09 vs 04:03:08). Replacing
+    the module-global datetime class freezes the stamp; payloads only ever
+    carry the ISO string, so no other code path observes the swap."""
+    from datetime import datetime, timezone
+
+    import kgov.model
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 11, 19, 4, 0, 0, tzinfo=tz)
+
+    monkeypatch.setattr(kgov.model, "datetime", _FrozenDatetime)
+
+
 # ---------------------------------------------------------------------------
 # schema-diff
 # ---------------------------------------------------------------------------
@@ -94,45 +114,66 @@ def test_schema_diff_output_md_extension_shortcut(tmp_path):
     must honour the ``.md`` output-extension shortcut (cli.py:238) exactly
     like ``--markdown`` — markdown written to the file, rc 0 for an additive
     diff. The export route pins the same branch; this pins the direct route
-    the README documents."""
+    the README documents, including the file-vs-stdout identity: the -o leg
+    keeps stdout empty, moves only the gate summary to stderr, and writes the
+    byte-identical markdown render to the file (modulo the trailing newline
+    the stdout print adds)."""
     before = str(FIXTURES / "schemas" / "v1.json")
     after = str(FIXTURES / "schemas" / "v2.json")
-    out = tmp_path / "diff.md"
-    code = main([
-        "schema-diff",
-        "--before", before,
-        "--after", after,
-        "--subject", "payments-value",
-        "-o", str(out),
-    ])
+    base = ["schema-diff", "--before", before, "--after", after,
+            "--subject", "payments-value"]
+    # stdout leg renders the default markdown with the gate summary on stderr
+    code, out, err = _run(*base)
     assert code == 0
-    body = out.read_text(encoding="utf-8")
+    assert out.lstrip().startswith("#")
+    assert "Additive" in out
+    assert err == "SCHEMA DIFF: Additive\n"
+    assert out.endswith("\n")
+    # -o diff.md honours the extension shortcut and keeps stdout empty
+    md_path = tmp_path / "diff.md"
+    code, out_f, err_f = _run(*base, "-o", str(md_path))
+    assert code == 0
+    assert out_f == ""
+    assert err_f == "SCHEMA DIFF: Additive\n"
+    body = md_path.read_text(encoding="utf-8")
     assert body.lstrip().startswith("#")
     assert not body.lstrip().startswith("{")
     assert "Additive" in body
+    # raw texts differ only by the trailing newline the stdout print adds
+    assert body == out.rstrip("\n")
 
 
 def test_schema_diff_output_json_extension_shortcut(tmp_path):
     """README:56 documents ``--json`` 或 ``.json`` 后缀输出 JSON; the direct
     subcommand must honour the ``.json`` output-extension shortcut
     (cli.py:237) exactly like ``--json`` even with no explicit flag —
-    JSON written to the file, rc 0 for an additive diff."""
+    JSON written to the file, rc 0 for an additive diff. Also pins the
+    file-vs-stdout identity: the -o leg keeps stdout empty, keeps the gate
+    summary on stderr, and writes the byte-identical JSON render (modulo the
+    stdout print's trailing newline) to the file."""
     before = str(FIXTURES / "schemas" / "v1.json")
     after = str(FIXTURES / "schemas" / "v2.json")
-    out = tmp_path / "diff.json"
-    code = main([
-        "schema-diff",
-        "--before", before,
-        "--after", after,
-        "--subject", "payments-value",
-        "-o", str(out),
-    ])
+    base = ["schema-diff", "--before", before, "--after", after,
+            "--subject", "payments-value"]
+    # --json stdout render: payload with trailing newline, no stderr noise
+    code, out, err = _run(*base, "--json")
     assert code == 0
-    body = out.read_text(encoding="utf-8")
-    assert body.lstrip().startswith("{")
-    data = json.loads(body)
+    data = json.loads(out)
     assert data["kind"] == CompatibilityKind.ADDITIVE
     assert data["subject"] == "payments-value"
+    assert err == "SCHEMA DIFF: Additive\n"
+    assert out.endswith("\n")
+    # -o diff.json honours the extension shortcut and keeps stdout empty
+    out_path = tmp_path / "diff.json"
+    code, out_f, err_f = _run(*base, "-o", str(out_path))
+    assert code == 0
+    assert out_f == ""
+    assert err_f == "SCHEMA DIFF: Additive\n"
+    body = out_path.read_text(encoding="utf-8")
+    assert body.lstrip().startswith("{")
+    assert json.loads(body) == data
+    # raw texts differ only by the trailing newline the stdout print adds
+    assert body == out.rstrip("\n")
 
 
 def test_schema_diff_json_output_file_vs_stdout(tmp_path):
@@ -471,13 +512,14 @@ def test_check_gate_exact_equality_and_payload_shape(tmp_path, capsys):
     assert "ok=False violations=9 gate=8 -> FAIL" in capsys.readouterr().err
 
 
-def test_check_cli_output_file_success_writes_json(tmp_path):
+def test_check_cli_output_file_success_writes_json(tmp_path, monkeypatch):
     """cmd_check writes byte-identical JSON (modulo the trailing newline a
     stdout print adds) to the -o file and to stdout on the no-output route at
     the main() boundary. report/registry/topics got this file-vs-stdout pin in
     earlier rounds; existing check pins only read the -o file back, never
     compared it against the stdout render. The -o leg keeps stdout empty and
     moves the gate summary to stderr; the stdout leg has empty stderr."""
+    _freeze_clock(monkeypatch)
     rules = FIXTURES / "rules" / "rules_scale.yaml"
     msgs = FIXTURES / "messages" / "payments_messages.json"
     base = ["check", "--config", str(rules), "--messages", str(msgs)]
@@ -903,7 +945,7 @@ def test_report_csv_full_row_values(tmp_path):
     assert file_text.splitlines() == lines
 
 
-def test_report_cli_output_file_success_writes_json(tmp_path) -> None:
+def test_report_cli_output_file_success_writes_json(tmp_path, monkeypatch) -> None:
     """README.md:127: ``kgov report --topics topics.json [--registry ...]
     [--groups ...] [--format json|csv] [-o report.json|report.csv]`` documents
     the -o flag writing report output to a file. test_report_rules_messages_
@@ -913,6 +955,7 @@ def test_report_cli_output_file_success_writes_json(tmp_path) -> None:
     render. This test does: exit 0 with the same rendered JSON (top-level
     ``{"topics", "total_topics", "generated_at"}``) in the file as the stdout
     route emits."""
+    _freeze_clock(monkeypatch)
     base = ["report", "--topics", str(FIXTURES / "topics" / "topics.json"),
             "--registry", str(FIXTURES / "registry" / "registry.json"),
             "--groups", str(FIXTURES / "subject_groups" / "consumer_groups.json"),
@@ -1397,7 +1440,7 @@ def test_export_report_csv_full_rows_identical_to_report_route(tmp_path) -> None
     assert rep_out.splitlines() == lines
 
 
-def test_export_report_cli_output_file_success_writes_json(tmp_path) -> None:
+def test_export_report_cli_output_file_success_writes_json(tmp_path, monkeypatch) -> None:
     """cmd_export routes --type report to cmd_report (cli.cmd_export:539-572),
     so the export route must inherit report's file-vs-stdout contract at the
     main() boundary: byte-identical JSON (modulo the trailing newline a stdout
@@ -1406,6 +1449,7 @@ def test_export_report_cli_output_file_success_writes_json(tmp_path) -> None:
     same JSON. test_report_cli_output_file_success_writes_json pins only the
     direct report route, and test_export_report_csv_full_rows_identical_to_
     report_route covers only --format csv, never the export JSON -o leg."""
+    _freeze_clock(monkeypatch)
     base = ["export", "--type", "report",
             "--topics", str(FIXTURES / "topics" / "topics.json"),
             "--registry", str(FIXTURES / "registry" / "registry.json"),
@@ -1461,7 +1505,7 @@ def test_export_check_stdout_no_attribute_error(capsys):
     assert len(data["violations"]) == 9
 
 
-def test_export_check_cli_output_file_success_writes_json(tmp_path):
+def test_export_check_cli_output_file_success_writes_json(tmp_path, monkeypatch):
     """cmd_export routes --type check to cmd_check (cli.cmd_export:539-553), so
     the export route must inherit check's file-vs-stdout contract at the main()
     boundary: byte-identical JSON (modulo the trailing newline a stdout print
@@ -1469,6 +1513,7 @@ def test_export_check_cli_output_file_success_writes_json(tmp_path):
     leg, and the gate summary on stderr. test_export_check_stdout_no_attribute_
     error only pins the stdout leg; test_check_cli_output_file_success_writes_
     json pins the direct check route, never the export parser."""
+    _freeze_clock(monkeypatch)
     rules = FIXTURES / "rules" / "rules_scale.yaml"
     msgs = FIXTURES / "messages" / "payments_messages.json"
     base = ["export", "--type", "check", "--format", "json",
@@ -1790,13 +1835,14 @@ def test_registry_cli_output_write_fails_closed(server) -> None:
         assert "Traceback" not in err, out
 
 
-def test_registry_cli_output_file_success_writes_full_dump(server, tmp_path) -> None:
+def test_registry_cli_output_file_success_writes_full_dump(server, tmp_path, monkeypatch) -> None:
     """README:105: ``kgov registry --registry-url http://localhost:8081
     [-o registry.json]`` documents the -o flag writing the registry output to
     a file. The fail-closed legs are pinned by
     test_registry_cli_output_write_fails_closed; this test pins the success
     path: exit 0 with the same rendered full-dump JSON (top-level
     ``{"subjects", "generated_at"}``) in the file as the stdout route emits."""
+    _freeze_clock(monkeypatch)
     # stdout leg: the full-dump payload with a trailing newline and empty
     # stderr
     code, out, err = _run("registry", "--registry-url", server.base_url)
@@ -2609,6 +2655,8 @@ def test_topics_cli_output_file_success_writes_payload(monkeypatch, tmp_path) ->
     route at the main() boundary. This test does: exit 0 with the same rendered
     payload (top-level ``{"topics", "generated_at"}``) in the file as the
     stdout route emits."""
+    _freeze_clock(monkeypatch)
+
     def rich_list_topics(bootstrap, timeout=10.0):
         return ["payments", "orders"]
 
