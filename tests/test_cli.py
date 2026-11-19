@@ -2122,6 +2122,49 @@ def test_export_unknown_type_fails_closed():
 # ---------------------------------------------------------------------------
 
 
+def test_registry_url_gate_at_main_boundary(server, monkeypatch) -> None:
+    """README:105-106 documents ``--registry-url`` as the Schema Registry base
+    URL. test_registry_cli_full pins the live-fetch path; this test pins the
+    URL GATE (cli.py:428) through the parser: every junk string must be
+    rejected BEFORE the lazy SchemaRegistryClient import (cli.py:431) and any
+    wire call, with a clean CliError -> exit 3, empty stdout, no urllib-internal
+    leak. The gate previously read ``startswith("http")`` (loose), so
+    ``http:``/``https:x``/``http:/x``/``HTTPS://x``/``" http://x"`` slipped
+    through to SchemaRegistryClient and leaked ``registry request failed:
+    cannot reach http:: no host given`` to stderr — the same fail-open the
+    check --schema-registry gate (cli.py:275) had before it was tightened.
+    A recorder installed in place of SchemaRegistryClient proves zero
+    constructor reach for every junk leg; the live-server fence proves a
+    well-formed URL still fetches (exit 0)."""
+    from kgov.registry import SchemaRegistryClient
+
+    calls: list = []
+
+    class _WireBomb:
+        def __init__(self, *a, **kw):
+            calls.append(a)
+            raise AssertionError("wire reached")
+
+    # fence: a well-formed --registry-url passes the gate and fetches (exit 0)
+    code, out, _ = _run("registry", "--registry-url", server.base_url)
+    assert code == 0
+    assert set(json.loads(out)["subjects"]) == {"orders-value", "payments-value"}
+
+    monkeypatch.setattr("kgov.registry.SchemaRegistryClient", _WireBomb)
+
+    # every junk string dies at the gate: exit 3, clean error, zero client reach
+    for junk in ("", "   ", "\t\n", "not-a-url", "abc", "localhost:8081",
+                 "ftp://x", "http:", "https:x", "http:/x", "://x",
+                 "HTTPS://x", " http://x"):
+        calls.clear()
+        code, out, err = _run("registry", "--registry-url", junk)
+        assert code == 3, junk
+        assert out == ""
+        assert "registry requires --registry-url <http://host:port>" in err, junk
+        assert "Traceback" not in err, junk
+        assert calls == [], f"junk {junk!r} reached SchemaRegistryClient"
+
+
 def test_registry_cli_full(server) -> None:
     code, out, _ = _run("registry", "--registry-url", server.base_url)
     assert code == 0
