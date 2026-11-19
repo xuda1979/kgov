@@ -2720,6 +2720,44 @@ def test_feed_file_not_found_ladder_at_main_boundary(tmp_path):
         assert "Traceback" not in err, name
 
 
+def test_schema_parse_error_ladder_at_main_boundary(tmp_path):
+    """A diff across schema formats must fail closed with the same clean error
+    on every schema-diff route: diff_schemas raises SchemaParseError on
+    cross-format input (schema_diff.py:744) and cmd_schema_diff wraps it as
+    CliError "schema parse error: {exc}" (cli.py:229-230), so direct and export
+    legs (export parser reroutes schema-diff into cmd_schema_diff, cli.py:545)
+    both exit 3 with out=="" and no Traceback. The invalid-JSON axis is pinned
+    at test_invalid_json_feed_ladder_at_main_boundary:2566 but the parse-formats
+    axis (valid JSON, unparseable-as-single-format pairing) has no pin. Each
+    leg pairs a JSON Schema file (has "$schema") against a real Avro record so
+    the cross-format trigger is the only failure point."""
+    js_schema = tmp_path / "jschema.json"
+    js_schema.write_text(json.dumps({
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+    }), encoding="utf-8")
+    avro = str(FIXTURES / "schemas" / "v1.json")
+
+    for name, argv in [
+        ("schema-diff --before json --after avro",
+         ["schema-diff", "--before", str(js_schema), "--after", avro]),
+        ("schema-diff --before avro --after json",
+         ["schema-diff", "--before", avro, "--after", str(js_schema)]),
+        ("export schema-diff --before json --after avro",
+         ["export", "--type", "schema-diff", "--format", "json",
+          "--before", str(js_schema), "--after", avro]),
+        ("export schema-diff --before avro --after json",
+         ["export", "--type", "schema-diff", "--format", "json",
+          "--before", avro, "--after", str(js_schema)]),
+    ]:
+        code, out, err = _run(*argv)
+        assert code == 3, name
+        assert out == "", name
+        assert "schema parse error: cannot diff across formats" in err, (name, err)
+        assert "Traceback" not in err, name
+
+
 def test_export_unknown_type_fails_closed():
     """export --type accepts only schema-diff|check|violations|report
     (cli.py:656). An unknown type must fail closed on both boundaries: at the
