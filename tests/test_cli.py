@@ -2109,6 +2109,60 @@ def test_export_violations_alias_routes_to_check(capsys):
     assert "supports --format json" in capsys.readouterr().err
 
 
+def test_export_check_alias_format_ladder_at_main_boundary(tmp_path):
+    """The export parser accepts --format json|csv|markdown|md (cli.py:662),
+    so an unsupported value for a check-routed type is a *handler* failure,
+    not a parser one. markdown/md pass the export parser (unlike the direct
+    check parser, whose choices=[json] makes them a usage error exit 2,
+    pinned in test_direct_subcommand_format_axes_pinned) and must be rejected
+    by _require_export_format (cli.py:579-591) as a clean exit-3 CliError;
+    out-of-choices values (xml/html/yaml) never leave the parser -> exit 2.
+    The violations alias (cli.py:570 routes both check and violations to
+    cmd_check) must honor --quiet and the -o leg exactly like the check route
+    (pinned in test_check_quiet_suppresses_stdout_at_main_boundary), which
+    only ever pinned the export --type check quiet leg."""
+    rules = str(FIXTURES / "rules" / "rules_scale.yaml")
+    msgs = str(FIXTURES / "messages" / "payments_messages.json")
+
+    # markdown/md are valid export-parser choices but check cannot render
+    # them: exit 3 with a clean CliError naming the rendered formats.
+    for typ in ("check", "violations"):
+        for fmt in ("markdown", "md"):
+            code, out, err = _run("export", "--type", typ, "--format", fmt,
+                                  "--config", rules, "--messages", msgs)
+            assert code == 3, (typ, fmt)
+            assert out == ""
+            assert f"{typ} export supports --format json, got {fmt!r}" in err
+            assert "Traceback" not in err
+
+    # out-of-choices values stop at the parser (exit 2, empty stdout).
+    for typ in ("check", "violations"):
+        for junk in ("xml", "html", "yaml"):
+            code, out, err = _run("export", "--type", typ, "--format", junk,
+                                  "--config", rules, "--messages", msgs)
+            assert code == 2, (typ, junk)
+            assert out == ""
+            assert "invalid choice" in err and "Traceback" not in err
+
+    # violations alias honors --quiet: stdout fully suppressed, exit 1 over
+    # the gate, no stderr.
+    code, out, err = _run("export", "--type", "violations", "--format", "json",
+                          "--quiet", "--config", rules, "--messages", msgs)
+    assert code == 1
+    assert out == "" and err == ""
+
+    # violations alias --quiet with -o: file still carries the payload,
+    # stdout empty, summary stays on stderr.
+    out_file = tmp_path / "violations_quiet.json"
+    code, out, err = _run("export", "--type", "violations", "--format", "json",
+                          "--quiet", "-o", str(out_file),
+                          "--config", rules, "--messages", msgs)
+    assert code == 1
+    assert out == ""
+    assert json.loads(out_file.read_text(encoding="utf-8"))["violation_count"] == 9
+    assert "ok=False violations=9 gate=0 -> FAIL" in err
+
+
 def test_export_unknown_type_fails_closed():
     """export --type accepts only schema-diff|check|violations|report
     (cli.py:656). An unknown type must fail closed on both boundaries: at the
