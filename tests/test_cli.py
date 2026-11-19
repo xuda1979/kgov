@@ -666,6 +666,59 @@ def test_check_gate_exact_equality_and_payload_shape(tmp_path, capsys):
     assert "ok=False violations=9 gate=8 -> FAIL" in capsys.readouterr().err
 
 
+def test_check_quiet_suppresses_stdout_at_main_boundary(tmp_path):
+    """README:26 documents check as the CI gate, and cli.py:390-391 make the
+    JSON payload stdout-only unless -o writes it (stderr keeps the
+    ok=... gate=... -> PASS/FAIL summary in both cases). Earlier check pins
+    pass --quiet only as a companion flag while asserting exit codes, so the
+    flag's own contract — stdout fully suppressed, exit code and file/stderr
+    legs untouched — is never pinned through the parser. This test pins: the
+    dirty fixture renders JSON to stdout without the flag (exit 1); --quiet
+    empties stdout while preserving the exit code (1 over gate, 0 within
+    gate); --quiet with -o still writes the file and the stderr summary;
+    --quiet never masks a usage failure (--topic without --broker still exit
+    3); and export --type check (496-497) carries the same flag through."""
+    rules = str(FIXTURES / "rules" / "rules_scale.yaml")
+    msgs = str(FIXTURES / "messages" / "payments_messages.json")
+    dirty = ["check", "--config", rules, "--messages", msgs]
+
+    # no flag: full JSON payload on stdout, exit 1, stderr empty
+    code, out, err = _run(*dirty)
+    assert code == 1
+    assert out.startswith("{") and json.loads(out)["violation_count"] == 9
+    assert err == ""
+
+    # --quiet: stdout suppressed, exit code preserved
+    code, out, err = _run(*dirty, "--quiet")
+    assert code == 1
+    assert out == "" and err == ""
+
+    # --quiet within the gate: exit 0, still no stdout
+    code, out, err = _run(*dirty, "--max-violations", "10", "--quiet")
+    assert code == 0
+    assert out == "" and err == ""
+
+    # --quiet with -o: file written, stdout empty, summary stays on stderr
+    out_file = tmp_path / "quiet.json"
+    code, out, err = _run(*dirty, "--quiet", "-o", str(out_file))
+    assert code == 1
+    assert out == ""
+    assert out_file.exists() and json.loads(out_file.read_text(encoding="utf-8"))["ok"] is False
+    assert "ok=False violations=9 gate=0 -> FAIL" in err
+
+    # --quiet never masks a usage failure: --topic without --broker -> exit 3
+    code, out, err = _run("check", "--config", rules, "--topic", "payments", "--quiet")
+    assert code == 3
+    assert out == ""
+    assert "--topic requires --broker" in err
+
+    # export --type check alias honors --quiet identically (exit 1, no stdout)
+    code, out, err = _run("export", "--type", "check", "--config", rules,
+                          "--messages", msgs, "--quiet")
+    assert code == 1
+    assert out == "" and err == ""
+
+
 def test_check_cli_output_file_success_writes_json(tmp_path, monkeypatch):
     """cmd_check writes byte-identical JSON (modulo the trailing newline a
     stdout print adds) to the -o file and to stdout on the no-output route at
