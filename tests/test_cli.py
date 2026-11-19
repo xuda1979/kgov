@@ -2163,6 +2163,82 @@ def test_export_check_alias_format_ladder_at_main_boundary(tmp_path):
     assert "ok=False violations=9 gate=0 -> FAIL" in err
 
 
+def test_export_check_wire_validation_at_main_boundary(monkeypatch):
+    """export --type check/violations routes to cmd_check (cli.py:570), so it
+    must inherit every wire-validation the direct check route enforces BEFORE
+    any broker/registry contact. The direct-route legs are pinned at
+    test_check_requires_data_source (802), test_check_topic_without_broker_
+    exit_3 (808) and test_check_schema_registry_url_gate_at_main_boundary
+    (1113); the export route was only ever pinned with a real --messages
+    fixture (test_export_check_cli_output_file_success_writes_json, 1972), and
+    test_export_check_quiet... only covered the --quiet flag. This pin proves
+    the alias route fails closed identically: no data source -> exit-3
+    CliError, --topic without --broker -> exit 3, a junk --schema-registry
+    string dies at the URL gate (cli.py:275) with no read_topic reach, while
+    a well-formed http(s) URL wires an AvroRecordDecoder (fence) and the
+    no-flag fence wires None — all through the export parser."""
+    from kgov.broker import AvroRecordDecoder
+
+    rules = str(FIXTURES / "rules" / "rules_scale.yaml")
+    calls: list = []
+
+    def fake_read(bootstrap, topic, value_decoder=None, **kw):
+        calls.append(value_decoder)
+        return []
+
+    monkeypatch.setattr("kgov.broker.read_topic", fake_read)
+    base = ["export", "--type", "check", "--format", "json",
+            "--config", rules]
+
+    # no data source: export must fail closed like direct check (exit 3)
+    code, out, err = _run(*base)
+    assert code == 3
+    assert out == ""
+    assert "check needs a data source" in err
+    assert "Traceback" not in err
+
+    # violations alias: same no-data-source failure
+    code, out, err = _run(*base, "--type", "violations")
+    assert code == 3
+    assert "check needs a data source" in err
+
+    # --topic without --broker: exit 3, never a wire call
+    calls.clear()
+    code, out, err = _run(*base, "--topic", "payments")
+    assert code == 3
+    assert out == ""
+    assert "--topic requires --broker" in err
+    assert calls == []
+
+    # every junk --schema-registry string dies at the URL gate before any
+    # read_topic reach (same ladder as the direct route pin, cli.py:275)
+    for junk in ("", "   ", "not-a-url", "localhost:8081", "http:", "https:x", "://x"):
+        calls.clear()
+        code, out, err = _run(*base, "--broker", "127.0.0.1:9092",
+                              "--topic", "payments", "--schema-registry", junk)
+        assert code == 3, junk
+        assert out == ""
+        assert f"--schema-registry must be an http(s) URL, got {junk!r}" in err, junk
+        assert "Traceback" not in err, junk
+        assert calls == [], f"junk {junk!r} reached the wire"
+
+    # a well-formed http(s) URL wires an AvroRecordDecoder and scans (fence)
+    calls.clear()
+    code, out, err = _run(*base, "--broker", "127.0.0.1:9092",
+                          "--topic", "payments",
+                          "--schema-registry", "http://127.0.0.1:8081")
+    assert code == 0
+    assert len(calls) == 1 and isinstance(calls[0], AvroRecordDecoder)
+    assert json.loads(out)["ok"] is True
+
+    # without the flag no decoder is wired (fence)
+    calls.clear()
+    code, out, _ = _run(*base, "--broker", "127.0.0.1:9092",
+                        "--topic", "payments")
+    assert code == 0
+    assert len(calls) == 1 and calls[0] is None
+
+
 def test_export_unknown_type_fails_closed():
     """export --type accepts only schema-diff|check|violations|report
     (cli.py:656). An unknown type must fail closed on both boundaries: at the
