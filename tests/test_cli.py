@@ -2969,6 +2969,45 @@ def test_lazy_import_gates_fail_closed_at_main_boundary(monkeypatch) -> None:
         assert "Traceback" not in err, (name, err)
 
 
+def test_load_json_catch_all_legs_at_main_boundary() -> None:
+    """_load_json_or_exit's catch-all branch (cli.py:141-145) has no main()
+    pin: except (OSError, ValueError) wraps PermissionError on an unreadable
+    file and "embedded null byte" on a malformed path as the clean CliError
+    "cannot read {path!r}: {exc}" — the raw OSError/ValueError must never
+    escape main(). The sibling legs are pinned elsewhere (file not found /
+    not a file / not valid UTF-8 / invalid JSON in {path}; see the feed and
+    schema-diff ladders), but the catch-all collides on a distinctive prefix
+    so grep "cannot read" found zero test matches. Reachable without network
+    via cmd_schema_diff --before/--after (cli.py:203 -> _load_json_or_exit;
+    the chmod-000 leg needs a non-root uid so the read genuinely raises
+    PermissionError). Each leg exits 3 with out=="" and no Traceback."""
+    import os
+    import stat
+
+    v1 = str(FIXTURES / "schemas" / "v1.json")
+    v2 = str(FIXTURES / "schemas" / "v2.json")
+
+    tmp = Path(FIXTURES).parent / "no_perm_r37.json"
+    tmp.write_text('{"type": "record"}', encoding="utf-8")
+    tmp.chmod(0o000)
+    try:
+        code, out, err = _run("schema-diff", "--before", str(tmp), "--after", v2)
+        assert code == 3, err
+        assert out == "", err
+        assert "cannot read" in err and "Permission denied" in err, err
+        assert "Traceback" not in err, err
+    finally:
+        tmp.chmod(0o644)
+        tmp.unlink()
+
+    code, out, err = _run("schema-diff", "--before", "/tmp/r37_nul\x00path.json",
+                          "--after", v2)
+    assert code == 3, err
+    assert out == "", err
+    assert "cannot read" in err and "embedded null byte" in err, err
+    assert "Traceback" not in err, err
+
+
 def test_export_unknown_type_fails_closed():
     """export --type accepts only schema-diff|check|violations|report
     (cli.py:656). An unknown type must fail closed on both boundaries: at the
