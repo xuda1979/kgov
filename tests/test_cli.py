@@ -1362,6 +1362,21 @@ def test_export_schema_diff_md(tmp_path):
     # raw texts differ only by the trailing newline the stdout print adds
     assert body == out.rstrip("\n")
 
+    # breaking fixtures still write the -o file while exiting 1, keeping the
+    # same stdout-empty/stderr-summary routing as the additive leg
+    breaking = tmp_path / "breaking.md"
+    base_break = ["export", "--type", "schema-diff", "--format", "markdown",
+                  "--before", str(FIXTURES / "schemas" / "breaking_before.json"),
+                  "--after", str(FIXTURES / "schemas" / "breaking_after.json")]
+    code, out_br, err_br = _run(*base_break, "-o", str(breaking))
+    assert code == 1
+    assert out_br == ""
+    assert err_br == "SCHEMA DIFF: Breaking (incompatible)\n"
+    break_body = breaking.read_text(encoding="utf-8")
+    assert break_body.lstrip().startswith("#")
+    assert not break_body.lstrip().startswith("{")
+    assert "Compatibility: **Breaking** (INCOMPATIBLE)" in break_body
+
 
 def test_export_schema_diff_json_full_payload_file_vs_stdout(tmp_path) -> None:
     """README.md's schema-diff section documents ``[-o diff.md|diff.json]``.
