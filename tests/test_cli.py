@@ -2969,6 +2969,31 @@ def test_lazy_import_gates_fail_closed_at_main_boundary(monkeypatch) -> None:
         assert "Traceback" not in err, (name, err)
 
 
+def test_check_broker_route_import_gate_fails_closed(monkeypatch) -> None:
+    """cmd_check's --broker/--topic route imports the broker plumbing lazily
+    inside _validate (cli.py:289); when the kgov[broker] extra is absent the
+    ImportError is re-raised by cmd_check's except ImportError (cli.py:359-360)
+    as the clean CliError str(exc), so the raw ImportError must never escape
+    main() as a traceback. Round-36 pinned the cmd_topics/cmd_registry import
+    gates (cli.py:405-408, 431-434) but not this route: grep "cannot import
+    name 'AvroRecordDecoder'" has zero matches. Reachable without network: the
+    import fails before any broker call. Exits 3 with out=="" and no
+    Traceback."""
+    import sys
+    import types
+
+    rules = str(FIXTURES / "rules" / "rules_scale.yaml")
+    argv = ["check", "--config", rules,
+            "--broker", "127.0.0.1:9092", "--topic", "payments"]
+    monkeypatch.setitem(sys.modules, "kgov.broker",
+                        types.ModuleType("kgov.broker"))
+    code, out, err = _run(*argv)
+    assert code == 3, err
+    assert out == "", err
+    assert "cannot import name 'AvroRecordDecoder' from 'kgov.broker'" in err, err
+    assert "Traceback" not in err, err
+
+
 def test_load_json_catch_all_legs_at_main_boundary() -> None:
     """_load_json_or_exit's catch-all branch (cli.py:141-145) has no main()
     pin: except (OSError, ValueError) wraps PermissionError on an unreadable
