@@ -1498,6 +1498,46 @@ def test_report_violations_junk_shape_tolerated(tmp_path, capsys):
     assert "file not found" in capsys.readouterr().err
 
 
+def test_report_topics_fixture_junk_shape_fails_closed(tmp_path) -> None:
+    """build_governance_report validates the --topics fixture shape and
+    cmd_report wraps its ValueError (cli.py:522-523) in the clean CliError
+    str(exc), so a --topics file that resolves to a non-list (int / string /
+    garbage dict) or a list entry that is not a mapping with a string 'name'
+    must exit 3 with out=="" and no Traceback — never a raw ValueError escaping
+    main(). The pinned report ladders cover non-UTF-8 files (2430), not-a-file
+    paths (2469) and junk --violations shapes (1482) but no junk *topics* shape
+    (grep "topics fixture must resolve to a list" has zero matches). A tolerated
+    leg (dict without a 'topics' key -> empty report) stays exit 0."""
+    good = str(FIXTURES / "topics" / "topics.json")
+
+    code, out, err = _run("report", "--topics", good)
+    assert code == 0, err
+
+    legs = [
+        ("42", "topics fixture must resolve to a list of topic mappings"),
+        ('"junk"', "topics fixture must resolve to a list of topic mappings"),
+        ('{"topics": "junk"}',
+         "topics fixture must resolve to a list of topic mappings"),
+        ("[42]", "topics fixture entry must be a mapping with a 'name'"),
+        ('[{"name": 123}]',
+         "topics fixture entry 'name' must be a string"),
+    ]
+    for i, (payload, want) in enumerate(legs):
+        f = tmp_path / f"topics_{i}.json"
+        f.write_text(payload, encoding="utf-8")
+        code, out, err = _run("report", "--topics", str(f))
+        assert code == 3, (payload, err)
+        assert out == "", (payload, err)
+        assert want in err, (payload, err)
+        assert "Traceback" not in err, (payload, err)
+
+    # a dict without a 'topics' key is tolerated as an empty report (exit 0)
+    tol = tmp_path / "topics_tol.json"
+    tol.write_text('{"foo": 1}', encoding="utf-8")
+    code, out, err = _run("report", "--topics", str(tol))
+    assert code == 0, err
+
+
 def test_report_violations_accumulates_per_topic_counts(tmp_path, capsys):
     """README.md:126 documents --violations violations.json as an alternate
     source to --rules --messages; the four existing --violations pins are all
