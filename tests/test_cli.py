@@ -2682,6 +2682,44 @@ def test_feed_directory_as_file_ladder_at_main_boundary(tmp_path):
         assert "Traceback" not in err, name
 
 
+def test_feed_file_not_found_ladder_at_main_boundary(tmp_path):
+    """A missing JSON feed path must fail closed with the same clean error on
+    every _load_json_or_exit route: FileNotFoundError maps to CliError "file
+    not found: {path}" (cli.py:134) for schema-diff --before/--after and
+    report --violations, and the export parser reroutes schema-diff into
+    cmd_schema_diff (cli.py:545) and report into cmd_report (cli.py:573) so
+    those legs inherit the identical error — never a raw FileNotFoundError
+    traceback escaping main(). The direct report --violations leg is pinned at
+    test_report_violations_junk_shape_tolerated:1498 ("42" non-path value
+    reaching the same branch); the schema-diff direct and export legs and the
+    export report leg have no pin. Each leg uses a real companion fixture so
+    the missing feed path is the only failure point."""
+    missing = str(tmp_path / "no_such_feed.json")
+    after = str(FIXTURES / "schemas" / "v1.json")
+    topics = str(FIXTURES / "topics" / "topics.json")
+
+    for name, argv in [
+        ("schema-diff --before", ["schema-diff", "--before", missing,
+                                  "--after", after]),
+        ("schema-diff --after", ["schema-diff", "--before", after,
+                                 "--after", missing]),
+        ("export schema-diff --before", ["export", "--type", "schema-diff",
+                                         "--format", "json", "--before",
+                                         missing, "--after", after]),
+        ("export schema-diff --after", ["export", "--type", "schema-diff",
+                                        "--format", "json", "--before",
+                                        after, "--after", missing]),
+        ("export report --violations", ["export", "--type", "report",
+                                        "--format", "json", "--topics",
+                                        topics, "--violations", missing]),
+    ]:
+        code, out, err = _run(*argv)
+        assert code == 3, name
+        assert out == "", name
+        assert f"file not found: {missing}" in err, (name, err)
+        assert "Traceback" not in err, name
+
+
 def test_export_unknown_type_fails_closed():
     """export --type accepts only schema-diff|check|violations|report
     (cli.py:656). An unknown type must fail closed on both boundaries: at the
