@@ -1290,6 +1290,59 @@ def test_export_report_csv_full_rows_identical_to_report_route(tmp_path) -> None
     assert rep_out.splitlines() == lines
 
 
+def test_export_report_cli_output_file_success_writes_json(tmp_path) -> None:
+    """cmd_export routes --type report to cmd_report (cli.cmd_export:539-572),
+    so the export route must inherit report's file-vs-stdout contract at the
+    main() boundary: byte-identical JSON (modulo the trailing newline a stdout
+    print adds) between the -o file and the stdout render, stdout empty on the
+    -o leg, and the default (no --format) export report -o file writing the
+    same JSON. test_report_cli_output_file_success_writes_json pins only the
+    direct report route, and test_export_report_csv_full_rows_identical_to_
+    report_route covers only --format csv, never the export JSON -o leg."""
+    base = ["export", "--type", "report",
+            "--topics", str(FIXTURES / "topics" / "topics.json"),
+            "--registry", str(FIXTURES / "registry" / "registry.json"),
+            "--groups", str(FIXTURES / "subject_groups" / "consumer_groups.json"),
+            "--format", "json"]
+    code, out, err = _run(*base)
+    assert code == 0
+    assert err == ""  # stdout leg: stderr stays empty
+    data = json.loads(out)  # unsorted, so json.loads order-independent below
+    assert set(data) == {"generated_at", "topics", "total_topics"}
+    assert data["total_topics"] == 3
+    assert out.endswith("\n")
+
+    out_path = tmp_path / "kgovern_report.json"
+    code, out_file, err_file = _run(*base, "-o", str(out_path))
+    assert code == 0
+    assert out_file == ""  # -o route keeps stdout empty
+    assert err_file == ""
+    file_text = out_path.read_text(encoding="utf-8")
+    assert json.loads(file_text) == data
+    assert out.rstrip("\n") == file_text
+    assert out_path.read_text(encoding="utf-8").endswith("\n") is False
+
+    # default format (no --format) export report -o file writes the same JSON
+    default_path = tmp_path / "kgovern_default.json"
+    code, _, _ = _run("export", "--type", "report",
+                      "--topics", str(FIXTURES / "topics" / "topics.json"),
+                      "--registry", str(FIXTURES / "registry" / "registry.json"),
+                      "--groups", str(FIXTURES / "subject_groups" / "consumer_groups.json"),
+                      "-o", str(default_path))
+    assert code == 0
+    assert json.loads(default_path.read_text(encoding="utf-8")) == data
+
+    # cross-route equivalence: the direct report --format json route renders
+    # the same payload as the export route's -o file
+    code, rep_out, _ = _run("report",
+                            "--topics", str(FIXTURES / "topics" / "topics.json"),
+                            "--registry", str(FIXTURES / "registry" / "registry.json"),
+                            "--groups", str(FIXTURES / "subject_groups" / "consumer_groups.json"),
+                            "--format", "json")
+    assert code == 0
+    assert json.loads(rep_out) == data
+
+
 def test_export_check_stdout_no_attribute_error(capsys):
     """export --type check must not crash on the missing --quiet attribute."""
     rules = FIXTURES / "rules" / "rules_scale.yaml"
