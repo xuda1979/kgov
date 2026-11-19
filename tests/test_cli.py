@@ -135,6 +135,75 @@ def test_schema_diff_output_json_extension_shortcut(tmp_path):
     assert data["subject"] == "payments-value"
 
 
+def test_schema_diff_json_output_file_vs_stdout(tmp_path):
+    """README:56 documents ``--json`` 输出 JSON; README:45 documents
+    ``[-o diff.md|diff.json]``. The direct schema-diff route must write the
+    -o file as the identical rendering to stdout — the payload equal and the
+    raw texts differing only by the trailing newline the stdout print adds
+    (cli.py:244 _write_out, cli.py:124 newline normalization) — with stdout
+    kept empty on the -o leg and the stderr gate summary unchanged. The
+    breaking-fixture leg must still write the file while exiting 1. The export
+    route pins this identity for --type schema-diff; the direct route the
+    README documents has no such pin."""
+    v1 = str(FIXTURES / "schemas" / "v1.json")
+    v2 = str(FIXTURES / "schemas" / "v2.json")
+    base = ["schema-diff", "--before", v1, "--after", v2,
+            "--subject", "payments-value", "--json"]
+
+    code, out, err = _run(*base)
+    assert code == 0
+    data = json.loads(out)
+    assert data["kind"] == "Additive"
+    assert data["compatible"] is True
+    assert data["subject"] == "payments-value"
+    assert data["format"] == "avro"
+    assert data["results"] == [{"kind": "Additive", "path": "email",
+                                "message": "field added (optional): `email`"}]
+    assert err == "SCHEMA DIFF: Additive\n"
+    assert out.endswith("\n")  # stdout print adds a trailing newline
+
+    out_path = tmp_path / "diff.json"
+    code, out_file, err_file = _run(*base, "-o", str(out_path))
+    assert code == 0
+    assert out_file == ""  # -o leg keeps stdout empty
+    assert err_file == "SCHEMA DIFF: Additive\n"
+    file_text = out_path.read_text(encoding="utf-8")
+    assert json.loads(file_text) == data
+    assert file_text == out.rstrip("\n")  # raw texts differ only by that newline
+
+    # breaking fixtures: stdout leg exits 1 with the payload on stdout, the
+    # -o leg keeps stdout empty but still writes the identical file
+    bb = str(FIXTURES / "schemas" / "breaking_before.json")
+    ba = str(FIXTURES / "schemas" / "breaking_after.json")
+    code, out_b, err_b = _run("schema-diff", "--before", bb, "--after", ba,
+                              "--subject", "payments-value", "--json")
+    assert code == 1
+    data_b = json.loads(out_b)
+    assert data_b["kind"] == "Breaking"
+    assert data_b["compatible"] is False
+    assert err_b == "SCHEMA DIFF: Breaking (incompatible)\n"
+
+    break_path = tmp_path / "breaking.json"
+    code, out_bf, err_bf = _run("schema-diff", "--before", bb, "--after", ba,
+                                "--subject", "payments-value", "--json",
+                                "-o", str(break_path))
+    assert code == 1
+    assert out_bf == ""
+    assert err_bf == "SCHEMA DIFF: Breaking (incompatible)\n"
+    assert json.loads(break_path.read_text(encoding="utf-8")) == data_b
+
+    # default markdown: the .md -o file is the identical render to stdout
+    # (no --json / no .json ext) minus the trailing stdout newline
+    code, out_md, err_md = _run(*base[:-1])  # drop --json
+    assert code == 0
+    assert out_md.lstrip().startswith("#")
+    md_path = tmp_path / "diff.md"
+    code, out_mdf, err_mdf = _run(*base[:-1], "-o", str(md_path))
+    assert code == 0
+    assert out_mdf == ""
+    assert md_path.read_text(encoding="utf-8") == out_md.rstrip("\n")
+
+
 
 def test_schema_diff_format_avro_success_path(capsys):
     """README:44 documents ``--format avro|json`` as the schema *language*
