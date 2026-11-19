@@ -2883,6 +2883,36 @@ def test_registry_junk_serialization_fails_closed_at_main_boundary(monkeypatch) 
         assert "Traceback" not in err, name
 
 
+def test_write_out_remote_failure_branches_at_main_boundary() -> None:
+    """_write_out's two non-argparse failure branches have no main() pin:
+    cli.py:101-106 wraps UnicodeEncodeError (a lone-high-surrogate path cannot
+    round-trip through the filesystem encoding) and cli.py:107-108 wraps any
+    other OSError (e.g. ENAMETOOLONG on a path past PATH_MAX) as the clean
+    CliError "cannot write output {path!r}: {exc}" — the raw exception must
+    never escape main(). cmd_schema_diff (cli.py:244) is the no-network route,
+    so schema-diff --before/--after fixture inputs reach _write_out with the
+    path as the only failure point. All the pinned _write_out legs elsewhere
+    (export ladder, topics, registry) cover only the FileNotFoundError /
+    IsADirectoryError branches; each leg here exits 3 with out=="" and no
+    Traceback."""
+    v1 = str(FIXTURES / "schemas" / "v1.json")
+    v2 = str(FIXTURES / "schemas" / "v2.json")
+
+    overlong = "/" + "a" * 5000 + "/out.json"
+    assert len(overlong) > 4096  # PATH_MAX on typical Linux filesystems
+
+    for name, out_path in [
+        ("-o lone-high-surrogate path", "/tmp/\ud800/out.json"),
+        ("-o path past PATH_MAX (ENAMETOOLONG)", overlong),
+    ]:
+        code, out, err = _run("schema-diff", "--before", v1, "--after", v2,
+                              "-o", out_path)
+        assert code == 3, name
+        assert out == "", name
+        assert "cannot write output" in err, (name, err)
+        assert "Traceback" not in err, name
+
+
 def test_export_unknown_type_fails_closed():
     """export --type accepts only schema-diff|check|violations|report
     (cli.py:656). An unknown type must fail closed on both boundaries: at the
