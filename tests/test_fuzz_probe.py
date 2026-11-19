@@ -1361,8 +1361,9 @@ def test_broker_live_wire_probes(tmp_path, monkeypatch):
     - ``broker.consumer_groups`` -> {} (designed degradation on unreachable)
     - ``cmd_topics``           -> CliError ("failed to list topics")
     - ``cmd_check --broker``   -> CliError ("broker scan failed"), junk
-      schema_registry shapes dying at the URL gate; the truthy-str "abc"
-      reaches the (inert decoder) construction then dies at the scan
+      schema_registry shapes dying at the URL gate; a scheme-less truthy
+      string like "abc" now also dies at the URL gate (cli.py:275, which
+      requires an http(s) base URL)
 
     Junk group_id/n/timeout values die at the pure-Python gates (fast), so the
     live-wire reach is limited to valid values; timeouts stay at 0.5s so each

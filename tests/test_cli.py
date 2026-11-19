@@ -1056,6 +1056,60 @@ def test_check_broker_schema_registry_decodes_wire_avro(
     assert data["violation_count"] == 3
 
 
+def test_check_schema_registry_url_gate_at_main_boundary(monkeypatch) -> None:
+    """README:98-100 documents --schema-registry as a Schema Registry URL for
+    decoding Confluent-wire Avro. The valid decode path is pinned through
+    main() (test_check_broker_schema_registry_decodes_wire_avro) and non-str
+    junk is pinned at the handler level (test_cmd_check_junk_schema_registry_-
+    fails_closed), but the scheme-less / whitespace STRING axis was never
+    pinned through the parser: a truthy junk string ("" , ``"   "``,
+    ``"not-a-url"``, ``"localhost:8081"``) used to pass the isinstance-str
+    gate and reach SchemaRegistryClient as a dead base_url — every wire
+    message then fell back to raw text/hex and a reachable broker passed the
+    gate as if it had decoded everything (the false-pass the gate comment
+    warns about). The gate (cli.py:275, same http(s)-scheme rule as
+    cmd_registry cli.py:426) must reject every junk string BEFORE the lazy
+    import and any wire call: clean CliError -> exit 3, empty stdout, no
+    read_topic reach. A well-formed http(s) URL still wires the decoder and
+    scans (fence, not broken)."""
+    from kgov.broker import AvroRecordDecoder
+
+    rules = str(FIXTURES / "rules" / "rules_scale.yaml")
+    calls: list = []
+
+    def fake_read(bootstrap, topic, value_decoder=None, **kw):
+        calls.append(value_decoder)
+        return []
+
+    monkeypatch.setattr("kgov.broker.read_topic", fake_read)
+    base = ["check", "--config", rules, "--broker", "127.0.0.1:9092",
+            "--topic", "payments"]
+
+    # every junk string dies at the URL gate: exit 3, clean error, no wire call
+    for junk in ("", "   ", "\t\n", "not-a-url", "abc", "localhost:8081",
+                 "ftp://x", "http:", "https:x", "://x"):
+        calls.clear()
+        code, out, err = _run(*base, "--schema-registry", junk)
+        assert code == 3, junk
+        assert out == ""
+        assert f"--schema-registry must be an http(s) URL, got {junk!r}" in err, junk
+        assert "Traceback" not in err, junk
+        assert calls == [], f"junk {junk!r} reached the wire"
+
+    # a well-formed http(s) URL wires an AvroRecordDecoder and scans (fence)
+    calls.clear()
+    code, out, err = _run(*base, "--schema-registry", "http://127.0.0.1:8081")
+    assert code == 0
+    assert len(calls) == 1 and isinstance(calls[0], AvroRecordDecoder)
+    assert json.loads(out)["ok"] is True
+
+    # without the flag no decoder is wired (fence)
+    calls.clear()
+    code, out, _ = _run(*base)
+    assert code == 0
+    assert calls == [None]
+
+
 # ---------------------------------------------------------------------------
 # report
 # ---------------------------------------------------------------------------
