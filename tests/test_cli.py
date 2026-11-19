@@ -859,18 +859,23 @@ def test_report_csv_full_row_values(tmp_path):
     replication_factor, schema_version/schema_state from --registry,
     last_consumed_at from --groups, the staleness decision and
     violation_count) are never pinned through main() against
-    tests/fixtures/. This test pins the exact rendered rows."""
-    out = tmp_path / "report.csv"
-    code = main([
+    tests/fixtures/. This test pins the exact rendered rows plus the
+    file-vs-stdout boundary: csv.DictWriter renders \\r\\n on stdout while the
+    -o file write strips the \\r (raw identity file == out.replace('\\r\\n','\\n')),
+    and both legs keep stderr empty."""
+    base = [
         "report",
         "--topics", str(FIXTURES / "topics" / "topics.json"),
         "--registry", str(FIXTURES / "registry" / "registry.json"),
         "--groups", str(FIXTURES / "subject_groups" / "consumer_groups.json"),
         "--format", "csv",
-        "-o", str(out),
-    ])
+    ]
+    # stdout leg: \r\n row endings and empty stderr
+    code, out, err = _run(*base)
     assert code == 0
-    lines = out.read_text(encoding="utf-8").splitlines()
+    assert err == ""
+    assert out.endswith("\r\n")
+    lines = out.splitlines()
     assert lines == [
         "name,owner,tags,partitions,replication_factor,schema_subject,"
         "schema_version,schema_state,latest_message_at,last_consumed_at,"
@@ -885,6 +890,17 @@ def test_report_csv_full_row_values(tmp_path):
         "inventory-events,warehouse,event-log,3,2,,,NONE,"
         "2026-10-01T00:00:00+00:00,2026-11-13T22:00:00+00:00,True,0",
     ]
+    # -o leg: stdout stays empty and the file matches the stdout render with
+    # the \r of each \r\n row ending stripped
+    out_path = tmp_path / "report.csv"
+    code, file_out, file_err = _run(*base, "-o", str(out_path))
+    assert code == 0
+    assert file_out == ""
+    assert file_err == ""
+    file_text = out_path.read_text(encoding="utf-8")
+    assert file_text == out.replace("\r\n", "\n")
+    assert "\r" not in file_text
+    assert file_text.splitlines() == lines
 
 
 def test_report_cli_output_file_success_writes_json(tmp_path) -> None:
