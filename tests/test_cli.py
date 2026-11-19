@@ -694,6 +694,58 @@ def test_check_cli_output_file_success_writes_json(tmp_path, monkeypatch):
     assert out.rstrip("\n") == file_text
 
 
+def test_check_usage_error_exit_2_and_gate_fail_closed():
+    """README (91-92) documents the check exit ladder ``0|1|2|3``, but the
+    main() pins cover only 0/1/3; the argparse exit-2 usage leg and the
+    fail-closed gate-legs for a non-positive --max-violations were pinned only
+    at the library Namespace boundary (test_cmd_check_junk_max_violations
+    ~2385), never through the real parser. A non-int or missing value is an
+    argparse ``type=int`` usage error (exit 2 with a clean message and empty
+    stdout) that fires even when the handler would otherwise complain about
+    the missing data source -- argparse rejects before dispatch. A negative or
+    zero gate must fail closed (exit 1) because ``max_v <= 0`` can never pass
+    while violations exist (cli.py:366); a large gate passes (exit 0) and the
+    payload keeps the requested gate value."""
+    rules = FIXTURES / "rules" / "rules_scale.yaml"
+    msgs = FIXTURES / "messages" / "payments_messages.json"
+    base = ["check", "--config", str(rules), "--messages", str(msgs)]
+
+    # exit 2: parser usage errors on the --max-violations axis
+    for bad_argv in [["--max-violations", "abc"],
+                     ["--max-violations", "3.5"],
+                     ["--max-violations", "--quiet"],
+                     ["--max-violations"]]:
+        code, out, err = _run(*base, *bad_argv)
+        assert code == 2, bad_argv
+        assert out == ""
+        assert "error:" in err
+        assert "Traceback" not in err
+
+        # argparse rejects before the handler: the same bad value without a
+        # data source is still a usage error, never the exit-3 CliError
+        code, out, err = _run("check", "--config", str(rules), *bad_argv)
+        assert code == 2, bad_argv
+        assert out == ""
+        assert "Traceback" not in err
+
+    # fail-closed gate: a negative or zero gate can never pass dirty messages
+    for junk_gate, expect in (("-3", 1), ("0", 1)):
+        code, out, _ = _run(*base, "--max-violations", junk_gate)
+        assert code == expect, junk_gate
+        data = json.loads(out)
+        assert data["gate"] == int(junk_gate)
+        assert data["violation_count"] == 9
+        assert data["ok"] is False
+
+    # a large gate passes (9 violations within gate 999) with gate preserved
+    code, out, _ = _run(*base, "--max-violations", "999")
+    assert code == 0
+    data = json.loads(out)
+    assert data["gate"] == 999
+    assert data["violation_count"] == 9
+    assert data["ok"] is False
+
+
 def test_check_requires_data_source(capsys):
     rules = FIXTURES / "rules" / "rules_scale.yaml"
     code = main(["check", "--config", str(rules)])
