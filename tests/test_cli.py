@@ -1313,12 +1313,34 @@ def test_write_out_junk_text_with_path_fails_closed(tmp_path):
 
 
 def test_export_schema_diff_md(tmp_path):
-    out = tmp_path / "diff.md"
-    code = main(["export", "--type", "schema-diff", "--format", "markdown",
-                 "--before", str(FIXTURES / "schemas" / "v1.json"),
-                 "--after", str(FIXTURES / "schemas" / "v2.json"), "-o", str(out)])
+    """export --type schema-diff --format markdown -o must write the identical
+    markdown render to the file as the stdout route emits (modulo the trailing
+    newline the stdout print adds), with the -o leg keeping stdout empty and
+    the gate summary on stderr — the same contract the JSON leg pins in
+    test_export_schema_diff_json_full_payload_file_vs_stdout."""
+    before = str(FIXTURES / "schemas" / "v1.json")
+    after = str(FIXTURES / "schemas" / "v2.json")
+    base = ["export", "--type", "schema-diff", "--format", "markdown",
+            "--before", before, "--after", after]
+
+    code, out, err = _run(*base)
     assert code == 0
-    assert out.read_text(encoding="utf-8").startswith("#")
+    assert out.lstrip().startswith("#")
+    assert "Additive" in out
+    assert err == "SCHEMA DIFF: Additive\n"
+    assert out.endswith("\n")
+
+    out_path = tmp_path / "diff.md"
+    code, out_file, err_file = _run(*base, "-o", str(out_path))
+    assert code == 0
+    assert out_file == ""  # -o leg keeps stdout empty
+    assert err_file == "SCHEMA DIFF: Additive\n"
+    body = out_path.read_text(encoding="utf-8")
+    assert body.lstrip().startswith("#")
+    assert not body.lstrip().startswith("{")
+    assert "Additive" in body
+    # raw texts differ only by the trailing newline the stdout print adds
+    assert body == out.rstrip("\n")
 
 
 def test_export_schema_diff_json_full_payload_file_vs_stdout(tmp_path) -> None:
