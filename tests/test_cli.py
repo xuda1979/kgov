@@ -918,6 +918,60 @@ def test_report_bad_yaml_rules_invalid_yaml_exit_3(tmp_path, capsys):
     assert "Traceback" not in err, err
 
 
+def test_report_invalid_json_feed_ladder_at_main_boundary(tmp_path, capsys):
+    """A --topics/--registry/--groups feed that is valid UTF-8 but not valid
+    JSON (report.py:54 _read_json ValueError "invalid JSON fixture: {exc}")
+    must exit 3 cleanly on every axis, not a raw json.JSONDecodeError
+    traceback escaping main(). cmd_report catches the ValueError
+    (cli.py:522-523) and raises the clean CliError(str(exc)). The pinned
+    fixtures ladders cover non-UTF-8 ("fixture is not valid UTF-8"), file
+    missing, and directory-as-file axes, but never a JSON *syntax* error:
+    grep "invalid JSON fixture" across tests/ has zero matches. Reachable
+    offline (pure json.loads, no network)."""
+    bad = tmp_path / "feed.json"
+    bad.write_text('{"topics": [{"name": "payments",},]}', encoding="utf-8")
+    topics = str(FIXTURES / "topics" / "topics.json")
+    for label, argv in (
+        ("--topics", ["report", "--topics", str(bad)]),
+        ("--registry", ["report", "--topics", topics, "--registry", str(bad)]),
+        ("--groups", ["report", "--topics", topics, "--groups", str(bad)]),
+    ):
+        code = main(argv)
+        out, err = capsys.readouterr()
+        assert code == 3, (label, err)
+        assert out == "", (label, out)
+        assert "invalid JSON fixture:" in err, (label, err)
+        assert "Traceback" not in err, (label, err)
+
+
+def test_check_invalid_json_messages_fail_closed(tmp_path, capsys):
+    """A --messages file that is valid UTF-8 but not valid JSON raises
+    RulesConfigError("invalid message fixture JSON: {exc}") (rules.py:489
+    via validate_fixture_file), caught by cmd_check (cli.py:357-358) as the
+    clean CliError "bad message fixture: ...". The check messages ladders
+    cover non-UTF-8 ("file is not valid UTF-8") and missing-file axes, never
+    a JSON *syntax* error: grep "invalid message fixture JSON" across tests/
+    has zero matches. Reachable offline; both the check and report routes
+    exit 3 with out=="" and no Traceback."""
+    bad = tmp_path / "messages.json"
+    bad.write_text('{"messages": [{"key": "a", "value": 1,}', encoding="utf-8")
+    rules = str(FIXTURES / "rules" / "rules_scale.yaml")
+    topics = str(FIXTURES / "topics" / "topics.json")
+    for label, argv, want in (
+        ("check", ["check", "--config", rules, "--messages", str(bad)],
+         "bad message fixture: invalid message fixture JSON:"),
+        ("report", ["report", "--topics", topics, "--rules", rules,
+                    "--messages", str(bad)],
+         "bad rules/messages: invalid message fixture JSON:"),
+    ):
+        code = main(argv)
+        out, err = capsys.readouterr()
+        assert code == 3, (label, err)
+        assert out == "", (label, out)
+        assert want in err, (label, err)
+        assert "Traceback" not in err, (label, err)
+
+
 def test_check_broker_scan_failure_exit_3(capsys, monkeypatch):
     """A broker scan that fails (unreachable cluster) must exit 3 with a clean
     error — never pass the gate with zero violations."""
