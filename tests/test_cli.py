@@ -1301,6 +1301,53 @@ def test_export_check_stdout_no_attribute_error(capsys):
     assert len(data["violations"]) == 9
 
 
+def test_export_check_cli_output_file_success_writes_json(tmp_path):
+    """cmd_export routes --type check to cmd_check (cli.cmd_export:539-553), so
+    the export route must inherit check's file-vs-stdout contract at the main()
+    boundary: byte-identical JSON (modulo the trailing newline a stdout print
+    adds) between the -o file and the stdout render, stdout empty on the -o
+    leg, and the gate summary on stderr. test_export_check_stdout_no_attribute_
+    error only pins the stdout leg; test_check_cli_output_file_success_writes_
+    json pins the direct check route, never the export parser."""
+    rules = FIXTURES / "rules" / "rules_scale.yaml"
+    msgs = FIXTURES / "messages" / "payments_messages.json"
+    base = ["export", "--type", "check", "--format", "json",
+            "--config", str(rules), "--messages", str(msgs)]
+
+    code, out, err = _run(*base)
+    assert code == 1  # fixture messages are intentionally dirty
+    data_stdout = json.loads(out)
+    assert err == ""  # stdout leg: summary stays off stderr
+    assert out.endswith("\n")
+
+    out_path = tmp_path / "kgovern_export.json"
+    code, out_file, err_file = _run(*base, "-o", str(out_path))
+    assert code == 1
+    assert out_file == ""  # -o route keeps stdout empty
+    assert err_file == "ok=False violations=9 gate=0 -> FAIL\n"
+    file_text = out_path.read_text(encoding="utf-8")
+    assert json.loads(file_text) == data_stdout
+    # raw texts differ only by the trailing newline the stdout print adds
+    assert out.rstrip("\n") == file_text
+
+    # --type violations is an alias: same gate, same -o contract
+    alias_path = tmp_path / "kgovern_violations.json"
+    code, _, _ = _run("export", "--type", "violations", "--format", "json",
+                      "--config", str(rules), "--messages", str(msgs),
+                      "-o", str(alias_path))
+    assert code == 1
+    assert json.loads(alias_path.read_text(encoding="utf-8"))["violation_count"] == 9
+
+    # --max-violations 9 passes the gate and still writes the -o file
+    pass_path = tmp_path / "kgovern_pass.json"
+    code, out_pass, err_pass = _run(*base, "--max-violations", "9",
+                                    "-o", str(pass_path))
+    assert code == 0
+    assert out_pass == ""
+    assert err_pass == "ok=False violations=9 gate=9 -> PASS\n"
+    assert pass_path.read_text(encoding="utf-8").endswith("\n") is False
+
+
 def test_export_schema_diff_csv_unsupported_exit_3(capsys):
     """schema-diff can only render JSON/Markdown; a csv export request must
     fail cleanly (exit 3), not crash on the missing --json attribute."""
