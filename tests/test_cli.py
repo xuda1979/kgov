@@ -3102,6 +3102,37 @@ def test_load_json_catch_all_legs_at_main_boundary() -> None:
     assert "Traceback" not in err, err
 
 
+def test_schema_shorthand_registry_ref_junk_fails_closed() -> None:
+    """cmd_schema_diff passes --before/--after refs into _load_schema_text
+    (cli.py:214-215). A single-colon ref that is not an existing path hits the
+    shorthand registry-version branch (cli.py:184) whose 3-way unpack
+    url, subject, version = ref.split("/", 2) raises ValueError on a ref with
+    fewer than two '/' separators (e.g. "localhost:1"); the branch's except
+    Exception (cli.py:199-200) re-raises it as the clean CliError "cannot
+    fetch schema from {ref!r}: {exc}" — the raw ValueError must never escape
+    main(). The pinned "cannot fetch schema from" tests (test_cli.py:550, URL
+    branch cli.py:170) use the non-repr message without {ref!r}; grep for the
+    repr form "cannot fetch schema from '" has zero matches. Reachable offline:
+    the unpack fails before any registry client or socket call. Each leg exits
+    3 with out=="" and no Traceback."""
+    v1 = str(FIXTURES / "schemas" / "v1.json")
+
+    code, out, err = _run("schema-diff", "--before", v1, "--after", v1)
+    assert code == 0, err
+
+    for name, argv, ref in [
+        ("junk --before", ["schema-diff", "--before", "localhost:1",
+                           "--after", v1], "localhost:1"),
+        ("junk --after", ["schema-diff", "--before", v1, "--after", "a:b/c"],
+         "a:b/c"),
+    ]:
+        code, out, err = _run(*argv)
+        assert code == 3, (name, err)
+        assert out == "", (name, err)
+        assert f"cannot fetch schema from '{ref}'" in err, (name, err)
+        assert "Traceback" not in err, (name, err)
+
+
 def test_export_unknown_type_fails_closed():
     """export --type accepts only schema-diff|check|violations|report
     (cli.py:656). An unknown type must fail closed on both boundaries: at the
