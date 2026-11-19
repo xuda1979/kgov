@@ -2913,6 +2913,28 @@ def test_write_out_remote_failure_branches_at_main_boundary() -> None:
         assert "Traceback" not in err, name
 
 
+def test_export_schema_diff_format_gate_at_main_boundary() -> None:
+    """export --type schema-diff --format csv must fail closed at cli.py:559-561:
+    the export parser accepts csv (cli.py:662 --format choices include csv) but
+    schema-diff can only render JSON or Markdown, so the translation branch at
+    cmd_export raises the clean CliError "schema-diff export supports --format
+    json|markdown, got {export_fmt!r}" instead of crashing later on the missing
+    --json/--markdown attributes. csv is the only non-json/markdown value that
+    survives argparse (markdown/md map into the markdown branch at cli.py:549-551;
+    anything else -- e.g. yaml -- is an argparse choices violation -> exit 2).
+    This axis is unpinned: grep "schema-diff export supports" has zero matches.
+    Each leg exits 3 with out=="" and no Traceback."""
+    v1 = str(FIXTURES / "schemas" / "v1.json")
+    v2 = str(FIXTURES / "schemas" / "v2.json")
+
+    code, out, err = _run("export", "--type", "schema-diff", "--format", "csv",
+                          "--before", v1, "--after", v2)
+    assert code == 3
+    assert out == ""
+    assert "schema-diff export supports --format json|markdown, got 'csv'" in err
+    assert "Traceback" not in err
+
+
 def test_export_unknown_type_fails_closed():
     """export --type accepts only schema-diff|check|violations|report
     (cli.py:656). An unknown type must fail closed on both boundaries: at the
