@@ -2600,6 +2600,49 @@ def test_invalid_json_feed_ladder_at_main_boundary(tmp_path):
         assert "Traceback" not in err, name
 
 
+def test_messages_file_missing_ladder_at_main_boundary(tmp_path):
+    """A --messages path that does not exist must fail closed with the same
+    clean error on every check/report route: cmd_check._validate raises
+    CliError "--messages file missing: {path}" for a non-existent path
+    (cli.py:262-264) and cmd_report the same (cli.py:496-498) when --rules and
+    --messages are both present; the export parser reroutes check/violations
+    into cmd_check (cli.py:570) and report into cmd_report (cli.py:573) so
+    those legs must inherit the identical error — never a raw FileNotFoundError
+    traceback escaping main(). The --rules neighbor axis is pinned at
+    test_report_missing_rules_file_exit_3:1399; this ladder pins the --messages
+    axis on the direct and export routes. Each leg uses a real --rules/--topics
+    fixture so the missing --messages path is the only failure point."""
+    topics = str(FIXTURES / "topics" / "topics.json")
+    rules = str(FIXTURES / "rules" / "rules_scale.yaml")
+    missing = str(tmp_path / "no_such_messages.json")
+
+    for name, argv, want in [
+        ("check --messages", ["check", "--config", rules, "--messages",
+                              missing],
+         f"--messages file missing: {missing}"),
+        ("report --rules+--messages", ["report", "--topics", topics,
+                                       "--rules", rules, "--messages", missing],
+         f"--messages file missing: {missing}"),
+        ("export check --messages", ["export", "--type", "check", "--format",
+                                     "json", "--config", rules, "--messages",
+                                     missing],
+         f"--messages file missing: {missing}"),
+        ("export violations --messages", ["export", "--type", "violations",
+                                          "--format", "json", "--config",
+                                          rules, "--messages", missing],
+         f"--messages file missing: {missing}"),
+        ("export report --messages", ["export", "--type", "report",
+                                      "--format", "json", "--topics", topics,
+                                      "--rules", rules, "--messages", missing],
+         f"--messages file missing: {missing}"),
+    ]:
+        code, out, err = _run(*argv)
+        assert code == 3, name
+        assert out == "", name
+        assert want in err, (name, err)
+        assert "Traceback" not in err, name
+
+
 def test_export_unknown_type_fails_closed():
     """export --type accepts only schema-diff|check|violations|report
     (cli.py:656). An unknown type must fail closed on both boundaries: at the
