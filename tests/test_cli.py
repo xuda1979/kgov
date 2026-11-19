@@ -2466,6 +2466,49 @@ def test_export_report_junk_fixture_ladder_at_main_boundary(tmp_path):
         assert "Traceback" not in err, name
 
 
+def test_export_directory_as_file_ladder_at_main_boundary(tmp_path):
+    """The export parser reroutes check/violations into cmd_check (cli.py:570),
+    report into cmd_report (cli.py:573) and schema-diff into cmd_schema_diff,
+    so a directory passed in place of a file must fail closed with the same
+    clean errors as the direct routes (pinned at test_report_check_directory_
+    as_file_exit_3:1648: report --topics <dir>, check --config <dir>, report
+    --registry <dir>, schema-diff --before <dir>) — never a raw
+    IsADirectoryError traceback escaping main()."""
+    adir = tmp_path / "adir"
+    adir.mkdir()
+    topics = str(FIXTURES / "topics" / "topics.json")
+    rules = str(FIXTURES / "rules" / "rules_scale.yaml")
+    msgs = str(FIXTURES / "messages" / "payments_messages.json")
+    after = str(FIXTURES / "schemas" / "v1.json")
+
+    for name, argv, want in [
+        ("report --topics <dir>", ["export", "--type", "report", "--format",
+                                   "json", "--topics", str(adir)],
+         "report requires --topics"),
+        ("check --config <dir>", ["export", "--type", "check", "--format",
+                                  "json", "--config", str(adir),
+                                  "--messages", msgs],
+         "check requires --config"),
+        ("violations --config <dir>", ["export", "--type", "violations",
+                                       "--format", "json", "--config",
+                                       str(adir), "--messages", msgs],
+         "check requires --config"),
+        ("report --registry <dir>", ["export", "--type", "report", "--format",
+                                     "json", "--topics", topics,
+                                     "--registry", str(adir)],
+         "--registry file missing"),
+        ("schema-diff --before <dir>", ["export", "--type", "schema-diff",
+                                        "--format", "json", "--before",
+                                        str(adir), "--after", after],
+         "not a file"),
+    ]:
+        code, out, err = _run(*argv)
+        assert code == 3, name
+        assert out == "", name
+        assert want in err, (name, err)
+        assert "Traceback" not in err, name
+
+
 def test_export_unknown_type_fails_closed():
     """export --type accepts only schema-diff|check|violations|report
     (cli.py:656). An unknown type must fail closed on both boundaries: at the
