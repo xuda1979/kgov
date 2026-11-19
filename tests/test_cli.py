@@ -1183,6 +1183,58 @@ def test_export_schema_diff_md(tmp_path):
     assert out.read_text(encoding="utf-8").startswith("#")
 
 
+def test_export_schema_diff_json_full_payload_file_vs_stdout(tmp_path) -> None:
+    """README.md's schema-diff section documents ``[-o diff.md|diff.json]``.
+    test_export_schema_diff_md only pins the markdown file's "#" prefix, and no
+    test covers the export route's default ``--format json`` stdout render or
+    its -o file-vs-stdout identity at the main() boundary. This test pins the
+    full JSON payload (kind/results/compatible), the empty-stdout + gate-summary
+    stderr routing of the -o leg, the trailing-newline-only text difference
+    between the stdout print and the raw file write, the identical rendering of
+    the default format, and the breaking-fixture leg (rc 1 with the file still
+    written)."""
+    v1 = str(FIXTURES / "schemas" / "v1.json")
+    v2 = str(FIXTURES / "schemas" / "v2.json")
+    base = ["export", "--type", "schema-diff", "--format", "json",
+            "--before", v1, "--after", v2]
+
+    code, out, err = _run(*base)
+    assert code == 0
+    data = json.loads(out)
+    assert data["kind"] == "Additive"
+    assert data["compatible"] is True
+    assert data["subject"] == "record"
+    assert data["format"] == "avro"
+    assert data["results"] == [{"kind": "Additive", "path": "email",
+                                "message": "field added (optional): `email`"}]
+    assert err == "SCHEMA DIFF: Additive\n"
+    assert out.endswith("\n")  # stdout print adds a trailing newline
+
+    out_path = tmp_path / "diff.json"
+    code, out_file, err_file = _run(*base, "-o", str(out_path))
+    assert code == 0
+    assert out_file == ""  # -o leg keeps stdout empty
+    assert err_file == "SCHEMA DIFF: Additive\n"
+    file_text = out_path.read_text(encoding="utf-8")
+    assert json.loads(file_text) == data
+    assert file_text == out.rstrip("\n")  # raw texts differ only by that newline
+
+    # default --format json renders the identical payload on stdout
+    code, out_default, _ = _run(*base[:3], *base[5:])  # drop --format json
+    assert code == 0
+    assert json.loads(out_default) == data
+
+    # breaking fixtures still write the -o file while exiting 1
+    breaking = tmp_path / "breaking.json"
+    code, out_b, err_b = _run(*base[:-4],  # drop --before/--after values
+                              "--before", str(FIXTURES / "schemas" / "breaking_before.json"),
+                              "--after", str(FIXTURES / "schemas" / "breaking_after.json"),
+                              "-o", str(breaking))
+    assert code == 1
+    assert json.loads(breaking.read_text(encoding="utf-8"))["kind"] == "Breaking"
+    assert err_b == "SCHEMA DIFF: Breaking (incompatible)\n"
+
+
 def test_export_report_csv(tmp_path):
     out = tmp_path / "report.csv"
     code = main(["export", "--type", "report", "--format", "csv",
