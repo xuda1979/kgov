@@ -1493,6 +1493,67 @@ def test_export_violations_alias_routes_to_check(capsys):
     assert "supports --format json" in capsys.readouterr().err
 
 
+def test_export_unknown_type_fails_closed():
+    """export --type accepts only schema-diff|check|violations|report
+    (cli.py:656). An unknown type must fail closed on both boundaries: at the
+    main() parser it is an argparse choices violation -> usage error exit 2
+    with no Traceback, no matter what trailing args look valid; through a
+    library Namespace (cmd_export) it raises CliError "unknown export type:
+    <value>" (cli.py:572) for str junk, a missing type, and non-str values.
+    test_direct_subcommand_format_axes_pinned pins the direct-subcommand
+    --format axis but never the export --type axis."""
+    import argparse
+
+    from kgov.cli import CliError, cmd_export
+    from kgov.cli import main as cli_main
+
+    def go(argv):
+        import contextlib
+        import io
+
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = cli_main(list(argv))
+        except SystemExit as exc:  # pragma: no cover - safety net
+            code = int(exc.code or 0)
+        return code, out.getvalue(), err.getvalue()
+
+    # main() boundary: unknown --type is rejected by the parser regardless of
+    # otherwise-valid trailing flags (--format csv, -o path, real inputs).
+    for junk in ("bogus", "report22", "xml", ""):
+        code, out, err = go(["export", "--type", junk, "--format", "csv",
+                             "-o", "x.csv"])
+        assert code == 2, junk
+        assert out == ""
+        assert "invalid choice" in err or "usage:" in err
+        assert "Traceback" not in err
+
+    # Valid choices must still route past the parser into their handlers: with
+    # --format csv and no real data the four real types each fail closed in the
+    # handler (schema-diff/check/violations reject csv, report requires
+    # --topics) as exit 3 — never the parser exit-2 usage error reserved for
+    # unknown types.
+    for real in ("schema-diff", "check", "violations", "report"):
+        code, out, err = go(["export", "--type", real, "--format", "csv"])
+        assert code == 3, real
+        assert "Traceback" not in err
+
+    # library Namespace boundary: cmd_export fails closed on junk/missing/
+    # non-str types instead of misrouting or raising AttributeError.
+    def ns(**kw):
+        return argparse.Namespace(**kw)
+
+    with pytest.raises(CliError, match="unknown export type: bogus"):
+        cmd_export(ns(type="bogus", format="json"))
+    with pytest.raises(CliError, match="unknown export type: None"):
+        cmd_export(ns(format="json"))
+    with pytest.raises(CliError, match="unknown export type: 123"):
+        cmd_export(ns(type=123, format="json"))
+    with pytest.raises(CliError, match="unknown export type: .*"):
+        cmd_export(ns(type=["schema-diff"], format="json"))
+
+
 # ---------------------------------------------------------------------------
 # registry (live mock server through the CLI)
 # ---------------------------------------------------------------------------
