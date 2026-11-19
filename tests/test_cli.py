@@ -3034,6 +3034,35 @@ def test_check_broker_route_import_gate_fails_closed(monkeypatch) -> None:
     assert "Traceback" not in err, err
 
 
+def test_main_junk_argv_fails_closed_with_usage_code(capsys) -> None:
+    """main() rejects a non-(list/tuple) argv up front (cli.py:691-694): an
+    int / string / dict / bytes container prints "kgov: usage: argv must be a
+    list of argument strings" to stderr and returns EXIT_USAGE (2) before
+    argparse ever touches the junk (list(args) on such a container would raise
+    a raw TypeError that escapes main). Non-str entries *inside* a list are
+    silently dropped (cli.py:694), so [42] degrades to an empty argv and
+    argparse's own "usage: kgov [-h] ..." error (SystemExit 2 -> main returns
+    2) — still a clean exit-2, no Traceback. Note None is the legitimate
+    default meaning "use sys.argv", so it is not gated. Grep "argv must be a
+    list" across the tests has zero matches; this gate is reachable from the
+    package API with no network. Each leg exits 2 with out=="" and no
+    Traceback."""
+    for junk in [42, "bogus", {"junk": 1}, b"bogus"]:
+        code = main(junk)
+        out, err = capsys.readouterr()
+        assert code == 2, (junk, code, err)
+        assert out == "", (junk, out)
+        assert "kgov: usage: argv must be a list of argument strings" in err, (junk, err)
+        assert "Traceback" not in err, (junk, err)
+
+    code = main([42])  # non-str entries dropped -> empty argv -> argparse usage
+    out, err = capsys.readouterr()
+    assert code == 2, err
+    assert out == "", out
+    assert "usage: kgov" in err, err
+    assert "Traceback" not in err, err
+
+
 def test_load_json_catch_all_legs_at_main_boundary() -> None:
     """_load_json_or_exit's catch-all branch (cli.py:141-145) has no main()
     pin: except (OSError, ValueError) wraps PermissionError on an unreadable
