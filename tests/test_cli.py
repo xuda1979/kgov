@@ -901,16 +901,26 @@ def test_report_cli_output_file_success_writes_json(tmp_path) -> None:
             "--registry", str(FIXTURES / "registry" / "registry.json"),
             "--groups", str(FIXTURES / "subject_groups" / "consumer_groups.json"),
             "--format", "json"]
-    out_path = tmp_path / "report.json"
-    code, _, _ = _run(*base, "-o", str(out_path))
+
+    # stdout leg: the JSON payload with a trailing newline and empty stderr
+    code, out, err = _run(*base)
     assert code == 0
-    data = json.loads(out_path.read_text(encoding="utf-8"))
+    assert err == ""
+    data = json.loads(out)
     assert set(data) == {"topics", "total_topics", "generated_at"}
     assert data["total_topics"] == 3
-    # file content identical to what the --format json stdout route renders
-    code, out, _ = _run(*base)
+    assert out.endswith("\n")
+
+    # -o leg: stdout stays empty, the file is the identical render minus the
+    # trailing newline the stdout print adds
+    out_path = tmp_path / "report.json"
+    code, out_file, err_file = _run(*base, "-o", str(out_path))
     assert code == 0
-    assert json.loads(out) == data
+    assert out_file == ""
+    assert err_file == ""
+    file_text = out_path.read_text(encoding="utf-8")
+    assert json.loads(file_text) == data
+    assert file_text == out.rstrip("\n")
 
 
 def test_report_requires_topics(capsys):
@@ -1759,29 +1769,56 @@ def test_registry_cli_output_file_success_writes_full_dump(server, tmp_path) -> 
     test_registry_cli_output_write_fails_closed; this test pins the success
     path: exit 0 with the same rendered full-dump JSON (top-level
     ``{"subjects", "generated_at"}``) in the file as the stdout route emits."""
-    out_path = tmp_path / "registry.json"
-    code, _, _ = _run("registry", "--registry-url", server.base_url,
-                      "-o", str(out_path))
+    # stdout leg: the full-dump payload with a trailing newline and empty
+    # stderr
+    code, out, err = _run("registry", "--registry-url", server.base_url)
     assert code == 0
-    data = json.loads(out_path.read_text(encoding="utf-8"))
+    assert err == ""
+    data = json.loads(out)
     assert set(data) == {"subjects", "generated_at"}
     assert set(data["subjects"]) == {"orders-value", "payments-value"}
-    # file content identical to what the no-flag stdout route renders
-    code, out, _ = _run("registry", "--registry-url", server.base_url)
+    assert out.endswith("\n")
+
+    # -o leg: stdout stays empty, the file is the identical render minus the
+    # trailing newline the stdout print adds
+    out_path = tmp_path / "registry.json"
+    code, out_file, err_file = _run("registry", "--registry-url", server.base_url,
+                                    "-o", str(out_path))
     assert code == 0
-    assert json.loads(out) == data
+    assert out_file == ""
+    assert err_file == ""
+    file_text = out_path.read_text(encoding="utf-8")
+    assert json.loads(file_text) == data
+    assert file_text == out.rstrip("\n")
 
 
 def test_registry_cli_output_file_success_writes_subject(server, tmp_path) -> None:
     """The ``-o`` success path must also honor ``--subject``: the file then
     carries that subject's per-version shape instead of the full dump."""
-    out_path = tmp_path / "subject.json"
-    code, _, _ = _run("registry", "--registry-url", server.base_url,
-                      "--subject", "payments-value", "-o", str(out_path))
+    # stdout leg: the per-version subject payload with a trailing newline and
+    # empty stderr
+    code, out, err = _run("registry", "--registry-url", server.base_url,
+                          "--subject", "payments-value")
     assert code == 0
-    data = json.loads(out_path.read_text(encoding="utf-8"))
+    assert err == ""
+    data = json.loads(out)
     assert set(data) == {"subject", "versions"}
     assert data["subject"] == "payments-value"
+    assert out.endswith("\n")
+
+    # -o leg: stdout stays empty, the file is the identical render minus the
+    # trailing newline the stdout print adds
+    out_path = tmp_path / "subject.json"
+    code, out_file, err_file = _run("registry", "--registry-url",
+                                    server.base_url,
+                                    "--subject", "payments-value",
+                                    "-o", str(out_path))
+    assert code == 0
+    assert out_file == ""
+    assert err_file == ""
+    file_text = out_path.read_text(encoding="utf-8")
+    assert json.loads(file_text) == data
+    assert file_text == out.rstrip("\n")
     assert [v["version"] for v in data["versions"]] == [1, 2]
 
 
@@ -2548,17 +2585,27 @@ def test_topics_cli_output_file_success_writes_payload(monkeypatch, tmp_path) ->
         return ["payments", "orders"]
 
     monkeypatch.setattr("kgov.broker.list_topics", rich_list_topics)
-    out_path = tmp_path / "topics.json"
-    code, _, _ = _run("topics", "--bootstrap", "127.0.0.1:9092",
-                      "-o", str(out_path))
+
+    # stdout leg: the JSON payload with a trailing newline and empty stderr
+    code, out, err = _run("topics", "--bootstrap", "127.0.0.1:9092")
     assert code == 0
-    data = json.loads(out_path.read_text(encoding="utf-8"))
+    assert err == ""
+    data = json.loads(out)
     assert set(data) == {"topics", "generated_at"}
     assert data["topics"] == ["payments", "orders"]
-    # file content identical to what the no-flag stdout route renders
-    code, out, _ = _run("topics", "--bootstrap", "127.0.0.1:9092")
+    assert out.endswith("\n")
+
+    # -o leg: stdout stays empty, the file is the identical render minus the
+    # trailing newline the stdout print adds
+    out_path = tmp_path / "topics.json"
+    code, out_file, err_file = _run("topics", "--bootstrap", "127.0.0.1:9092",
+                                    "-o", str(out_path))
     assert code == 0
-    assert json.loads(out) == data
+    assert out_file == ""
+    assert err_file == ""
+    file_text = out_path.read_text(encoding="utf-8")
+    assert json.loads(file_text) == data
+    assert file_text == out.rstrip("\n")
 
 
 def test_load_schema_text_tolerates_junk_refs_fail_closed():
