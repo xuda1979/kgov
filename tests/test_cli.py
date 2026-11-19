@@ -2563,6 +2563,43 @@ def test_export_output_path_failure_ladder_at_main_boundary(tmp_path):
         assert "Traceback" not in err, name
 
 
+def test_invalid_json_feed_ladder_at_main_boundary(tmp_path):
+    """A malformed JSON fixture must fail closed with the same clean error on
+    every feed route: _load_json_or_exit maps json.JSONDecodeError to CliError
+    "invalid JSON in {path}" (cli.py:139-140) for schema-diff --before/--after
+    (cli.py:203) and report --violations (cli.py:509), and the export parser
+    reroutes schema-diff into cmd_schema_diff (cli.py:545) and report into
+    cmd_report (cli.py:573) so those legs must inherit the identical error —
+    never a raw json.JSONDecodeError traceback escaping main(). The not-valid
+    UTF-8 (cli.py:138) and file-not-found (cli.py:134) neighbors are pinned
+    elsewhere (875/1439/1449 and 1498); this ladder pins the missing
+    JSONDecodeError branch on both the direct and export routes."""
+    bad = tmp_path / "bad.json"
+    bad.write_text("{bad json", encoding="utf-8")
+    after = str(FIXTURES / "schemas" / "v1.json")
+    topics = str(FIXTURES / "topics" / "topics.json")
+
+    for name, argv in [
+        ("schema-diff --before", ["schema-diff", "--before", str(bad),
+                                  "--after", after]),
+        ("schema-diff --after", ["schema-diff", "--before", after,
+                                 "--after", str(bad)]),
+        ("report --violations", ["report", "--topics", topics,
+                                 "--violations", str(bad)]),
+        ("export schema-diff --before", ["export", "--type", "schema-diff",
+                                         "--format", "json", "--before",
+                                         str(bad), "--after", after]),
+        ("export report --violations", ["export", "--type", "report",
+                                        "--format", "json", "--topics",
+                                        topics, "--violations", str(bad)]),
+    ]:
+        code, out, err = _run(*argv)
+        assert code == 3, name
+        assert out == "", name
+        assert f"invalid JSON in {bad}" in err, (name, err)
+        assert "Traceback" not in err, name
+
+
 def test_export_unknown_type_fails_closed():
     """export --type accepts only schema-diff|check|violations|report
     (cli.py:656). An unknown type must fail closed on both boundaries: at the
