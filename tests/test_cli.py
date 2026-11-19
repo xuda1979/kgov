@@ -2427,6 +2427,45 @@ def test_export_check_junk_fixture_ladder_at_main_boundary(tmp_path):
         assert "Traceback" not in err, name
 
 
+def test_export_report_junk_fixture_ladder_at_main_boundary(tmp_path):
+    """The export parser reroutes report into cmd_report (cli.py:573-575), so
+    junk fixtures must fail closed with the same clean errors as the direct
+    report route (pinned at test_report_non_utf8_topics_exit_3:1433,
+    test_report_non_utf8_rules_exit_3:1422, test_report_non_utf8_violations_
+    exit_3:1442) — never a raw UnicodeDecodeError traceback escaping main()."""
+    topics = str(FIXTURES / "topics" / "topics.json")
+
+    bad_topics = tmp_path / "topics.json"
+    bad_topics.write_bytes(b'\xff\xfe{"topics": []}')
+    bad_rules = tmp_path / "rules.yaml"
+    bad_rules.write_bytes(b"{topic: \xff\xfe}")
+    bad_msgs = tmp_path / "msgs.json"
+    bad_msgs.write_bytes(b'{"messages": \xff\xfe[]}')
+    bad_vio = tmp_path / "vio.json"
+    bad_vio.write_bytes(b'\xff\xfe[]')
+
+    # export report route: every junk fixture exits 3 with its designed message
+    for name, argv, want in [
+        ("non-utf8 topics", ["export", "--type", "report", "--format", "json",
+                             "--topics", str(bad_topics)],
+         "fixture is not valid UTF-8"),
+        ("non-utf8 rules and messages", ["export", "--type", "report",
+                                         "--format", "json", "--topics", topics,
+                                         "--rules", str(bad_rules),
+                                         "--messages", str(bad_msgs)],
+         "bad rules/messages"),
+        ("non-utf8 violations", ["export", "--type", "report", "--format",
+                                 "json", "--topics", topics,
+                                 "--violations", str(bad_vio)],
+         "not valid UTF-8"),
+    ]:
+        code, out, err = _run(*argv)
+        assert code == 3, name
+        assert out == "", name
+        assert want in err, (name, err)
+        assert "Traceback" not in err, name
+
+
 def test_export_unknown_type_fails_closed():
     """export --type accepts only schema-diff|check|violations|report
     (cli.py:656). An unknown type must fail closed on both boundaries: at the
