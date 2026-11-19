@@ -2935,6 +2935,40 @@ def test_export_schema_diff_format_gate_at_main_boundary() -> None:
     assert "Traceback" not in err
 
 
+def test_lazy_import_gates_fail_closed_at_main_boundary(monkeypatch) -> None:
+    """cmd_topics (cli.py:405-408) and cmd_registry (cli.py:431-434) import
+    their optional 'broker'/'registry' plumbing lazily and must convert an
+    ImportError (e.g. when the kgov[broker] extra with confluent-kafka is not
+    installed) into the clean CliError "broker features require the 'broker'
+    extra (confluent-kafka)" / "registry module unavailable" — the raw
+    ImportError must never escape main() as a traceback. Both gates are
+    reachable with no network: the import fails before any broker/registry
+    call. Simulate the missing extra by stubbing the loaded module in
+    sys.modules with a bare types.ModuleType that lacks the imported name.
+    Axis unpinned: grep "broker features require|registry module unavailable"
+    has zero matches. Each leg exits 3 with out=="" and no Traceback."""
+    import sys
+    import types
+
+    for name, module_name, argv, expect in [
+        ("topics import gate",
+         "kgov.broker",
+         ["topics", "--bootstrap", "127.0.0.1:9092"],
+         "broker features require the 'broker' extra (confluent-kafka)"),
+        ("registry import gate",
+         "kgov.registry",
+         ["registry", "--registry-url", "http://127.0.0.1:1"],
+         "registry module unavailable"),
+    ]:
+        monkeypatch.setitem(sys.modules, module_name,
+                            types.ModuleType(module_name))
+        code, out, err = _run(*argv)
+        assert code == 3, (name, err)
+        assert out == "", (name, err)
+        assert expect in err, (name, err)
+        assert "Traceback" not in err, (name, err)
+
+
 def test_export_unknown_type_fails_closed():
     """export --type accepts only schema-diff|check|violations|report
     (cli.py:656). An unknown type must fail closed on both boundaries: at the
