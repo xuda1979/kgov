@@ -96,17 +96,37 @@ def test_schema_diff_version_id_markdown_flags(capsys):
 
 
 def test_schema_diff_breaking_exit_1(tmp_path):
-    out = tmp_path / "diff.json"
-    code = main([
-        "schema-diff",
-        "--before", str(FIXTURES / "schemas" / "breaking_before.json"),
-        "--after", str(FIXTURES / "schemas" / "breaking_after.json"),
-        "--json", "-o", str(out),
-    ])
+    """A breaking diff exits 1 on every output route (README:57 ``kgov
+    schema-diff``), yet the -o file is still written on all of them: stdout
+    stays empty, the gate summary ``SCHEMA DIFF: Breaking (incompatible)`` is
+    the only stderr output, and the written file carries the breaking judgment.
+    Pins the stdout-empty/stderr-routing the old rc-1 pin never asserted, for
+    both the ``--json`` route and the ``.md`` extension shortcut, matching the
+    same contract the export route pins at cli.py."""
+    before = str(FIXTURES / "schemas" / "breaking_before.json")
+    after = str(FIXTURES / "schemas" / "breaking_after.json")
+    base = ["schema-diff", "--before", before, "--after", after]
+
+    # --json -o: rc 1, stdout empty, summary on stderr, JSON file written
+    out_json = tmp_path / "diff.json"
+    code, out, err = _run(*base, "--json", "-o", str(out_json))
     assert code == 1
-    data = json.loads(out.read_text(encoding="utf-8"))
+    assert out == ""
+    assert err == "SCHEMA DIFF: Breaking (incompatible)\n"
+    data = json.loads(out_json.read_text(encoding="utf-8"))
     assert data["kind"] == CompatibilityKind.BREAKING
     assert data["compatible"] is False
+
+    # .md extension shortcut (cli.py:238): same rc-1 contract, markdown file
+    out_md = tmp_path / "diff.md"
+    code, out, err = _run(*base, "-o", str(out_md))
+    assert code == 1
+    assert out == ""
+    assert err == "SCHEMA DIFF: Breaking (incompatible)\n"
+    body = out_md.read_text(encoding="utf-8")
+    assert body.lstrip().startswith("#")
+    assert not body.lstrip().startswith("{")
+    assert "Compatibility: **Breaking** (INCOMPATIBLE)" in body
 
 
 def test_schema_diff_output_md_extension_shortcut(tmp_path):
