@@ -2305,6 +2305,71 @@ def test_export_missing_required_args_ladder_at_main_boundary():
     assert "Traceback" not in err
 
 
+def test_export_max_violations_feed_ladder_at_main_boundary():
+    """The export parser accepts --max-violations type=int (cli.py:676) and
+    routes to cmd_check (cli.py:570), so the export route must inherit the
+    same feed-gate ladder as direct check. test_check_usage_error_exit_2_and_
+    gate_fail_closed (750) pins the direct route; only the pass leg is pinned
+    on the export route (test_export_check_cli_output_file_success_writes_json,
+    2010-2017). This pin closes the gap: junk values die at the parser as
+    exit-2 usage errors BEFORE the handler (argparse type=int rejects first,
+    so the same junk without a data source is still exit 2, never the exit-3
+    data-source CliError), while valid gates keep the fail-closed semantics
+    (cli.py:366): a negative or zero gate can never pass the dirty fixture
+    (exit 1, gate and violation_count preserved), a large gate passes (exit 0,
+    gate preserved), and the violations alias honors the identical ladder."""
+    rules = str(FIXTURES / "rules" / "rules_scale.yaml")
+    msgs = str(FIXTURES / "messages" / "payments_messages.json")
+    base = ["export", "--type", "check", "--format", "json",
+            "--config", rules, "--messages", msgs]
+
+    # exit 2: parser usage errors on the --max-violations axis
+    for bad_argv in [["--max-violations", "abc"],
+                     ["--max-violations", "3.5"],
+                     ["--max-violations", "--quiet"],
+                     ["--max-violations"]]:
+        code, out, err = _run(*base, *bad_argv)
+        assert code == 2, bad_argv
+        assert out == ""
+        assert "error:" in err
+        assert "Traceback" not in err
+
+        # argparse rejects before the handler: the same bad value without a
+        # data source is still a usage error, never the exit-3 CliError
+        code, out, err = _run("export", "--type", "check", "--format", "json",
+                              "--config", rules, *bad_argv)
+        assert code == 2, bad_argv
+        assert out == ""
+        assert "Traceback" not in err
+
+    # fail-closed gate: a negative or zero gate can never pass dirty messages
+    for junk_gate, expect in (("-3", 1), ("0", 1)):
+        code, out, _ = _run(*base, "--max-violations", junk_gate)
+        assert code == expect, junk_gate
+        data = json.loads(out)
+        assert data["gate"] == int(junk_gate)
+        assert data["violation_count"] == 9
+        assert data["ok"] is False
+
+    # a large gate passes (9 violations within gate 999) with gate preserved
+    code, out, _ = _run(*base, "--max-violations", "999")
+    assert code == 0
+    data = json.loads(out)
+    assert data["gate"] == 999
+    assert data["violation_count"] == 9
+    assert data["ok"] is False
+
+    # violations alias: same jail-on-junk, same fail-closed gate
+    code, out, _ = _run("export", "--type", "violations", "--format", "json",
+                        "--config", rules, "--messages", msgs,
+                        "--max-violations", "8")
+    assert code == 1
+    data = json.loads(out)
+    assert data["gate"] == 8
+    assert data["violation_count"] == 9
+    assert data["ok"] is False
+
+
 def test_export_unknown_type_fails_closed():
     """export --type accepts only schema-diff|check|violations|report
     (cli.py:656). An unknown type must fail closed on both boundaries: at the
