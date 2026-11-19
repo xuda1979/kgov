@@ -1164,6 +1164,53 @@ def test_export_report_csv(tmp_path):
     assert out.read_text(encoding="utf-8").startswith("name,")
 
 
+def test_export_report_csv_full_rows_identical_to_report_route(tmp_path) -> None:
+    """README.md:149 documents ``kgov export --type report --topics topics.json
+    --format csv -o report.csv``. test_export_report_csv only asserts the file's
+    header prefix and test_examples pins stdout header + topic order at the
+    process boundary, but nothing pins the export route's full per-topic data
+    rows, nor the -o file against the stdout render. This test pins the exact
+    12-column rows (mirroring test_report_csv_full_row_values for the direct
+    report route) and asserts the export -o file writes the identical rows and
+    the direct ``report --format csv`` route renders the same lines."""
+    base = ["export", "--type", "report",
+            "--topics", str(FIXTURES / "topics" / "topics.json"),
+            "--registry", str(FIXTURES / "registry" / "registry.json"),
+            "--groups", str(FIXTURES / "subject_groups" / "consumer_groups.json"),
+            "--format", "csv"]
+    code, out, _ = _run(*base)
+    assert code == 0
+    lines = out.splitlines()
+    assert lines == [
+        "name,owner,tags,partitions,replication_factor,schema_subject,"
+        "schema_version,schema_state,latest_message_at,last_consumed_at,"
+        "stale,violation_count",
+        # registry latest version 2 + no breaking diff between v1/v2 -> COMPATIBLE
+        "payments,payments-team,core|critical,12,3,payments-value,2,COMPATIBLE,"
+        "2026-11-13T08:15:00+00:00,2026-11-14T07:00:00+00:00,True,0",
+        # orders v1->v2 drops a field -> BREAKING; last consumed 2026-09-20 leaks.
+        "orders,checkout-eng,core,6,3,orders-value,2,BREAKING,"
+        "2026-11-10T11:30:00+00:00,2026-09-20T10:00:00+00:00,True,0",
+        # no schema_subject -> empty pair + NONE state
+        "inventory-events,warehouse,event-log,3,2,,,NONE,"
+        "2026-10-01T00:00:00+00:00,2026-11-13T22:00:00+00:00,True,0",
+    ]
+    # -o file writes rows identical to the stdout render (modulo trailing newline)
+    out_path = tmp_path / "export_report.csv"
+    code, _, _ = _run(*base, "-o", str(out_path))
+    assert code == 0
+    assert out_path.read_text(encoding="utf-8").splitlines() == lines
+    # cross-route equivalence: the direct report --format csv route (pinned
+    # row-for-row by test_report_csv_full_row_values) renders the same rows
+    code, rep_out, _ = _run("report",
+                            "--topics", str(FIXTURES / "topics" / "topics.json"),
+                            "--registry", str(FIXTURES / "registry" / "registry.json"),
+                            "--groups", str(FIXTURES / "subject_groups" / "consumer_groups.json"),
+                            "--format", "csv")
+    assert code == 0
+    assert rep_out.splitlines() == lines
+
+
 def test_export_check_stdout_no_attribute_error(capsys):
     """export --type check must not crash on the missing --quiet attribute."""
     rules = FIXTURES / "rules" / "rules_scale.yaml"
