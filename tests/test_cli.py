@@ -1336,8 +1336,13 @@ def test_export_report_csv_full_rows_identical_to_report_route(tmp_path) -> None
             "--registry", str(FIXTURES / "registry" / "registry.json"),
             "--groups", str(FIXTURES / "subject_groups" / "consumer_groups.json"),
             "--format", "csv"]
-    code, out, _ = _run(*base)
+    code, out, err = _run(*base)
     assert code == 0
+    # CSV renders \r\n row endings at the stdout boundary (csv.DictWriter in
+    # report.report_to_csv passes through _write_out unchanged), unlike JSON's
+    # trailing "\n" — pin that divergence and the empty stderr leg
+    assert err == ""
+    assert out.endswith("\r\n")
     lines = out.splitlines()
     assert lines == [
         "name,owner,tags,partitions,replication_factor,schema_subject,"
@@ -1353,11 +1358,18 @@ def test_export_report_csv_full_rows_identical_to_report_route(tmp_path) -> None
         "inventory-events,warehouse,event-log,3,2,,,NONE,"
         "2026-10-01T00:00:00+00:00,2026-11-13T22:00:00+00:00,True,0",
     ]
-    # -o file writes rows identical to the stdout render (modulo trailing newline)
+    # -o file writes rows identical to the stdout render: the file write strips
+    # nothing but the trailing newline's \r is removed (Path.write_text on the
+    # csv \r\n stream -> \n file), so raw identity is text == out.replace(\r\n,\n)
+    # and stdout must be empty on the -o leg
     out_path = tmp_path / "export_report.csv"
-    code, _, _ = _run(*base, "-o", str(out_path))
+    code, file_out, file_err = _run(*base, "-o", str(out_path))
     assert code == 0
-    assert out_path.read_text(encoding="utf-8").splitlines() == lines
+    assert file_out == ""
+    assert file_err == ""
+    file_text = out_path.read_text(encoding="utf-8")
+    assert file_text == out.replace("\r\n", "\n")
+    assert file_text.splitlines() == lines
     # cross-route equivalence: the direct report --format csv route (pinned
     # row-for-row by test_report_csv_full_row_values) renders the same rows
     code, rep_out, _ = _run("report",
