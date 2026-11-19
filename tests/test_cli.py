@@ -1511,6 +1511,25 @@ def test_export_schema_diff_md(tmp_path):
     assert not break_body.lstrip().startswith("{")
     assert "Compatibility: **Breaking** (INCOMPATIBLE)" in break_body
 
+    # --format md (p_exp choices, cli.py:658) is the shorthand for markdown:
+    # byte-identical stdout render and the same -o file identity contract,
+    # while a report export asking for markdown fails closed (exit 3) instead
+    code, out_sh, err_sh = _run(*base, "--format", "md")
+    assert code == 0
+    assert out_sh == out
+    assert err_sh == "SCHEMA DIFF: Additive\n"
+    shorthand = tmp_path / "shorthand.md"
+    code, out_shf, err_shf = _run(*base, "--format", "md", "-o", str(shorthand))
+    assert code == 0
+    assert out_shf == ""
+    assert shorthand.read_text(encoding="utf-8") == out_sh.rstrip("\n")
+
+    code, _, err_rep = _run("export", "--type", "report",
+                            "--topics", str(FIXTURES / "topics" / "topics.json"),
+                            "--format", "md")
+    assert code == 3
+    assert "report export supports --format csv|json" in err_rep
+
 
 def test_export_schema_diff_json_full_payload_file_vs_stdout(tmp_path) -> None:
     """README.md's schema-diff section documents ``[-o diff.md|diff.json]``.
