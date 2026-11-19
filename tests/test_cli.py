@@ -2832,6 +2832,57 @@ def test_check_broker_scan_junk_read_fails_closed(monkeypatch) -> None:
         assert "Traceback" not in err, name
 
 
+def test_registry_junk_serialization_fails_closed_at_main_boundary(monkeypatch) -> None:
+    """cmd_registry must fail closed when a wire double returns non-JSON-
+    serializable junk: values like set/bytes smuggled into the payload pass
+    the request wrapper unchanged (except Exception -> CliError, cli.py:455-456
+    and cli.py:461-462) and reach json.dumps cold at cli.py:464-467, which
+    raises TypeError wrapped as the clean CliError "registry response not
+    JSON-serializable: {exc}" — a junk read must never exit 0.
+    test_cmd_registry_junk_client_returns_fail_closed pins this branch on the
+    direct handler; this test pins it through main() on both the --subject
+    route (set inside get_version info) and the full-dump route (set/bytes
+    inside to_fixture_dict subjects). Each leg exits 3 with out=="" and no
+    Traceback."""
+    import kgov.registry
+
+    calls = {}
+
+    class JunkClient:
+        def __init__(self, url, timeout=None):
+            pass
+
+        def get_versions(self, subject):
+            return calls["versions"]
+
+        def get_version(self, subject, v):
+            return calls["info"]
+
+        def to_fixture_dict(self):
+            return calls["fixture"]
+
+    monkeypatch.setattr("kgov.registry.SchemaRegistryClient", JunkClient)
+
+    base = ["registry", "--registry-url", "http://127.0.0.1:1"]
+    for name, argv, state in [
+        ("set in subject info id",
+         base + ["--subject", "s"],
+         {"versions": [1], "info": {"id": {1}, "version": 1,
+                                    "compatibility": "BACKWARD",
+                                    "schema": {"type": "string"}}}),
+        ("set inside full-dump subjects",
+         base, {"fixture": {"subjects": ["a", {"b"}]}}),
+        ("bytes inside full-dump subjects",
+         base, {"fixture": {"subjects": ["a", b"raw"]}}),
+    ]:
+        calls.update(state)
+        code, out, err = _run(*argv)
+        assert code == 3, name
+        assert out == "", name
+        assert "registry response not JSON-serializable" in err, (name, err)
+        assert "Traceback" not in err, name
+
+
 def test_export_unknown_type_fails_closed():
     """export --type accepts only schema-diff|check|violations|report
     (cli.py:656). An unknown type must fail closed on both boundaries: at the
