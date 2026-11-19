@@ -2758,6 +2758,47 @@ def test_schema_parse_error_ladder_at_main_boundary(tmp_path):
         assert "Traceback" not in err, name
 
 
+def test_topics_failure_ladder_at_main_boundary(monkeypatch) -> None:
+    """The topics subcommand's two failure surfaces have no main()-boundary
+    pin: cmd_topics rejects an empty-string --bootstrap at its gate
+    (cli.py:403-404, "topics requires --bootstrap <host:port>") — argparse
+    requires the flag (cli.py:636) so only the empty string reaches it — and
+    the -o failure legs reuse the shared _write_out branch contract
+    (cli.py:97-100) reached only after list_topics succeeds (cli.py:417).
+
+    test_cmd_topics_output_write_fails_closed pins the -o failures on the
+    direct handler and test_topics_dispatch_exit_codes / _timeout pin the
+    dispatch and wire-call axes; this ladder pins the empty-bootstrap gate and
+    both -o failure legs through main(). Each leg must exit 3 with out=="",
+    the clean message on stderr, and no Traceback."""
+    from kgov.broker import _require_timeout
+
+    def fake_list_topics(bootstrap, timeout=10.0):
+        _require_timeout(timeout)
+        return ["payments"]
+
+    monkeypatch.setattr("kgov.broker.list_topics", fake_list_topics)
+
+    legs = [
+        ("topics --bootstrap ''",
+         ["topics", "--bootstrap", ""],
+         "topics requires --bootstrap <host:port>"),
+        ("topics -o /no/such/dir/out.json",
+         ["topics", "--bootstrap", "127.0.0.1:9092", "-o", "/no/such/dir/out.json"],
+         "no such directory"),
+        ("topics -o /tmp (directory target)",
+         ["topics", "--bootstrap", "127.0.0.1:9092", "-o", "/tmp"],
+         "path is a directory"),
+    ]
+    for name, argv, expected in legs:
+        code, out, err = _run(*argv)
+        assert code == 3, name
+        assert out == "", name
+        assert "cannot write output" in err or expected.startswith("topics"), (name, err)
+        assert expected in err, (name, err)
+        assert "Traceback" not in err, name
+
+
 def test_export_unknown_type_fails_closed():
     """export --type accepts only schema-diff|check|violations|report
     (cli.py:656). An unknown type must fail closed on both boundaries: at the
