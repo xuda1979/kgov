@@ -2509,6 +2509,60 @@ def test_export_directory_as_file_ladder_at_main_boundary(tmp_path):
         assert "Traceback" not in err, name
 
 
+def test_export_output_path_failure_ladder_at_main_boundary(tmp_path):
+    """The export parser reroutes schema-diff into cmd_schema_diff (cli.py:545),
+    check/violations into cmd_check (cli.py:570) and report into cmd_report
+    (cli.py:573), so a bad -o target must fail closed through _write_out
+    (cli.py:97-100: FileNotFoundError -> "no such directory", IsADirectoryError
+    -> "path is a directory") exactly like the direct routes — pinned at
+    test_output_to_missing_directory_exit_3:1673 (report -o /no/such/dir/
+    out.json, check -o /tmp) — never a raw FileNotFoundError/IsADirectoryError
+    traceback escaping main(). Each leg uses real inputs so only the output
+    path is the failure point."""
+    topics = str(FIXTURES / "topics" / "topics.json")
+    rules = str(FIXTURES / "rules" / "rules_scale.yaml")
+    msgs = str(FIXTURES / "messages" / "payments_messages.json")
+    v1 = str(FIXTURES / "schemas" / "v1.json")
+    v2 = str(FIXTURES / "schemas" / "v2.json")
+
+    for name, argv, want in [
+        ("report -o no-such-dir", ["export", "--type", "report", "--format",
+                                   "json", "--topics", topics,
+                                   "-o", "/no/such/dir/out.json"],
+         "no such directory"),
+        ("report -o dir", ["export", "--type", "report", "--format", "json",
+                           "--topics", topics, "-o", "/tmp"],
+         "path is a directory"),
+        ("check -o no-such-dir", ["export", "--type", "check", "--format",
+                                  "json", "--config", rules, "--messages",
+                                  msgs, "-o", "/no/such/dir/out.json"],
+         "no such directory"),
+        ("check -o dir", ["export", "--type", "check", "--format", "json",
+                          "--config", rules, "--messages", msgs, "-o", "/tmp"],
+         "path is a directory"),
+        ("violations -o no-such-dir", ["export", "--type", "violations",
+                                       "--format", "json", "--config", rules,
+                                       "--messages", msgs,
+                                       "-o", "/no/such/dir/out.json"],
+         "no such directory"),
+        ("schema-diff -o no-such-dir", ["export", "--type", "schema-diff",
+                                        "--format", "json", "--before", v1,
+                                        "--after", v2,
+                                        "-o", "/no/such/dir/out.json"],
+         "no such directory"),
+        ("schema-diff -o dir", ["export", "--type", "schema-diff",
+                                "--format", "json", "--before", v1,
+                                "--after", v2, "-o", "/tmp"],
+         "path is a directory"),
+    ]:
+        code, out, err = _run(*argv)
+        assert code == 3, name
+        assert out == "", name
+        assert "cannot write output" in err, (name, err)
+        assert want in err, (name, err)
+        assert "Traceback" not in err, name
+
+
 def test_export_unknown_type_fails_closed():
     """export --type accepts only schema-diff|check|violations|report
     (cli.py:656). An unknown type must fail closed on both boundaries: at the
