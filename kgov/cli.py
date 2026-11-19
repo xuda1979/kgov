@@ -273,14 +273,18 @@ def _validate(rs, messages_path: Optional[str], broker_url: Optional[str], topic
         if not isinstance(topic, str) or not topic:
             raise CliError(f"--topic must be a topic name, got {topic!r}")
         if registry_url is not None and (
-            not isinstance(registry_url, str) or not registry_url
+            not isinstance(registry_url, str)
+            or not registry_url.startswith(("http://", "https://"))
         ):
             # Truthy junk registry values (lists, dicts, ints, bytes, floats)
-            # are silently str()'d into a garbage URL by SchemaRegistryClient;
-            # a reachable broker would then decode every wire message as
-            # _UNDECODED and the gate would pass silently with a dead decoder.
-            # Fail closed at the boundary like --broker/--topic.
-            raise CliError(f"--schema-registry must be a <URL>, got {registry_url!r}")
+            # are silently str()'d into a garbage URL by SchemaRegistryClient,
+            # and a scheme-less string ("not-a-url", whitespace-only) builds an
+            # equally dead base_url: the registry fetch fails and every wire
+            # message falls back to raw text — on a reachable broker the gate
+            # would pass silently with a dead decoder. The flag is only usable
+            # with an http(s) URL (README:98-100, same gate as cmd_registry
+            # cli.py:426); fail closed at the boundary like --broker/--topic.
+            raise CliError(f"--schema-registry must be an http(s) URL, got {registry_url!r}")
         # Imported lazily: requires kgov[broker].
         from .broker import AvroRecordDecoder, read_topic  # type: ignore
         from .rules import Message, validate_message
