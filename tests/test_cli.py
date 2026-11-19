@@ -163,6 +163,47 @@ def test_schema_diff_output_md_extension_shortcut(tmp_path):
     assert body == out.rstrip("\n")
 
 
+def test_schema_diff_output_markdown_flag_file_vs_stdout(tmp_path):
+    """The explicit ``--markdown`` flag (cli.py:613) must hold the same
+    file-vs-stdout identity the ``.md`` extension shortcut pins in
+    test_schema_diff_output_md_extension_shortcut: the -o leg keeps stdout
+    empty, routes the gate summary to stderr, and writes the byte-identical
+    markdown render to the file (modulo the stdout print's trailing newline).
+    cli.py:238 resolves both routes through the same ``want_md`` branch, so the
+    flag and the shortcut must also produce byte-identical files (README:56
+    ``--json`` 或 ``.json`` 后缀 are documented as equivalent routes)."""
+    before = str(FIXTURES / "schemas" / "v1.json")
+    after = str(FIXTURES / "schemas" / "v2.json")
+    base = ["schema-diff", "--before", before, "--after", after,
+            "--subject", "payments-value"]
+
+    # stdout leg with the explicit flag: markdown render + trailing newline
+    code, out, err = _run(*base, "--markdown")
+    assert code == 0
+    assert out.lstrip().startswith("#")
+    assert not out.lstrip().startswith("{")
+    assert "Additive" in out
+    assert err == "SCHEMA DIFF: Additive\n"
+    assert out.endswith("\n")
+
+    # -o leg with the explicit flag: stdout empty, file == stdout minus newline
+    out_path = tmp_path / "flag.md"
+    code, out_f, err_f = _run(*base, "--markdown", "-o", str(out_path))
+    assert code == 0
+    assert out_f == ""
+    assert err_f == "SCHEMA DIFF: Additive\n"
+    body = out_path.read_text(encoding="utf-8")
+    assert body.lstrip().startswith("#")
+    assert not body.lstrip().startswith("{")
+    assert body == out.rstrip("\n")
+
+    # the extension shortcut resolves to the identical file content
+    shot_path = tmp_path / "shortcut.md"
+    code, _, _ = _run(*base, "-o", str(shot_path))
+    assert code == 0
+    assert shot_path.read_text(encoding="utf-8") == body
+
+
 def test_schema_diff_output_json_extension_shortcut(tmp_path):
     """README:56 documents ``--json`` 或 ``.json`` 后缀输出 JSON; the direct
     subcommand must honour the ``.json`` output-extension shortcut
