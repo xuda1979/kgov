@@ -2239,6 +2239,72 @@ def test_export_check_wire_validation_at_main_boundary(monkeypatch):
     assert len(calls) == 1 and calls[0] is None
 
 
+def test_export_missing_required_args_ladder_at_main_boundary():
+    """The export parser (cli.py:659-679) makes every data flag optional --
+    --config/--topics/--before/--after are not marked required like the
+    direct-subcommand parsers (schema-diff:608-609, check:622, report:649) --
+    so required-arg enforcement falls to the handlers as exit-3 CliError
+    naming each requirement. The direct routes are pinned at
+    test_schema_diff_missing_file (452), test_check_missing_config (816) and
+    test_report_requires_topics (1393); the export route was only ever pinned
+    with --format csv asserting a bare exit 3 (test_export_unknown_type_
+    fails_closed, 2283-2286). This pin nails the exact exit-3 ladder for all
+    four real export types: schema-diff needs --before and --after (partial/
+    one-sided still fails), check/violations need --config <rules.yaml>, and
+    report needs --topics <topics.json> -- always a clean CliError on stderr,
+    never a Traceback, never exit 2 (the parser accepts every trailing flag)."""
+    rules = str(FIXTURES / "rules" / "rules_scale.yaml")
+
+    # schema-diff: both --before and --after required; a partial pair still
+    # fails closed with the same message, not a late crash on the missing side
+    for suffix in ([], ["--before", "x.json"], ["--after", "x.json"]):
+        code, out, err = _run("export", "--type", "schema-diff",
+                              "--format", "json", *suffix)
+        assert code == 3, suffix
+        assert out == ""
+        assert "schema-diff requires --before and --after" in err
+        assert "Traceback" not in err
+
+    # check: --config is required; a missing file fails with the file-exists
+    # variant, an absent flag with the : got None variant. The missing-file
+    # leg must take precedence over the not-yet-checked data source.
+    code, out, err = _run("export", "--type", "check", "--format", "json")
+    assert code == 3
+    assert out == ""
+    assert "check requires --config <rules.yaml>: got None" in err
+    assert "Traceback" not in err
+
+    code, out, err = _run("export", "--type", "check", "--format", "json",
+                          "--config", "/no/rules.yaml", "--messages", "m.json")
+    assert code == 3
+    assert out == ""
+    assert "check requires --config <rules.yaml> (file must exist)" in err
+    assert "Traceback" not in err
+
+    # violations alias: identical --config enforcement as the check route
+    code, out, err = _run("export", "--type", "violations", "--format", "json")
+    assert code == 3
+    assert out == ""
+    assert "check requires --config <rules.yaml>: got None" in err
+
+    # report: --topics required before any --registry/--rules/messages are
+    # consulted; a fully valid-looking report invocation without --topics
+    # still fails closed naming the requirement.
+    code, out, err = _run("export", "--type", "report", "--format", "json")
+    assert code == 3
+    assert out == ""
+    assert "report requires --topics <topics.json>: got None" in err
+    assert "Traceback" not in err
+
+    code, out, err = _run("export", "--type", "report", "--format", "csv",
+                          "--registry", "r.json", "--rules", "ru.json",
+                          "--messages", "m.json", "--violations", "v.json")
+    assert code == 3
+    assert out == ""
+    assert "report requires --topics <topics.json>: got None" in err
+    assert "Traceback" not in err
+
+
 def test_export_unknown_type_fails_closed():
     """export --type accepts only schema-diff|check|violations|report
     (cli.py:656). An unknown type must fail closed on both boundaries: at the
