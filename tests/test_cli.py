@@ -402,6 +402,33 @@ def test_check_gate_exact_equality_and_payload_shape(tmp_path, capsys):
     assert "ok=False violations=9 gate=8 -> FAIL" in capsys.readouterr().err
 
 
+def test_check_cli_output_file_success_writes_json(tmp_path):
+    """cmd_check writes byte-identical JSON (modulo the trailing newline a
+    stdout print adds) to the -o file and to stdout on the no-output route at
+    the main() boundary. report/registry/topics got this file-vs-stdout pin in
+    earlier rounds; existing check pins only read the -o file back, never
+    compared it against the stdout render. The -o leg keeps stdout empty and
+    moves the gate summary to stderr; the stdout leg has empty stderr."""
+    rules = FIXTURES / "rules" / "rules_scale.yaml"
+    msgs = FIXTURES / "messages" / "payments_messages.json"
+    base = ["check", "--config", str(rules), "--messages", str(msgs)]
+
+    code, out, err = _run(*base)
+    assert code == 1  # fixture messages are intentionally dirty
+    data_stdout = json.loads(out)
+    assert err == ""  # stdout leg: summary stays off stderr
+
+    out_path = tmp_path / "check_results.json"
+    code, out_file, err_file = _run(*base, "-o", str(out_path))
+    assert code == 1
+    assert out_file == ""  # -o route keeps stdout empty
+    assert "ok=False violations=9 gate=0 -> FAIL" in err_file
+    file_text = out_path.read_text(encoding="utf-8")
+    assert json.loads(file_text) == data_stdout
+    # raw texts differ only by the trailing newline the stdout print adds
+    assert out.rstrip("\n") == file_text
+
+
 def test_check_requires_data_source(capsys):
     rules = FIXTURES / "rules" / "rules_scale.yaml"
     code = main(["check", "--config", str(rules)])
