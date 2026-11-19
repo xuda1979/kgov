@@ -351,6 +351,55 @@ def test_schema_diff_json_output_file_vs_stdout(tmp_path):
 
 
 
+def test_schema_diff_non_breaking_identical_renders(tmp_path, monkeypatch):
+    """An identical --before/--after diff (README:55 ``kgov schema-diff``)
+    exits 0 with the ``SCHEMA DIFF: Non-Breaking`` gate summary and the
+    "_No structural changes detected._" empty-diff marker: the default
+    markdown route renders the compatibility banner (compatible), the
+    --json route carries kind Non-Breaking / results [] / compatible true,
+    and both -o files are the byte-identical render to stdout (JSON needs a
+    frozen clock because the payload carries generated_at). No test pinned
+    this empty-diff route while Additive (56) and Breaking (98) both have
+    stdout/-o identity pins."""
+    v1 = str(FIXTURES / "schemas" / "v1.json")
+    base = ["schema-diff", "--before", v1, "--after", v1,
+            "--subject", "payments-value"]
+
+    # default markdown: gate summary + empty-diff marker on stdout
+    code, out, err = _run(*base)
+    assert code == 0
+    assert err == "SCHEMA DIFF: Non-Breaking\n"
+    assert out.endswith("\n")
+    assert "Compatibility: **Non-Breaking** (compatible)" in out
+    assert "_No structural changes detected._" in out
+
+    md_path = tmp_path / "diff.md"
+    code, out_f, err_f = _run(*base, "-o", str(md_path))
+    assert code == 0
+    assert out_f == ""  # -o leg keeps stdout empty
+    assert err_f == "SCHEMA DIFF: Non-Breaking\n"
+    assert md_path.read_text(encoding="utf-8") == out.rstrip("\n")
+
+    # --json: payload pins + -o identity (generated_at requires frozen clock)
+    _freeze_clock(monkeypatch)
+    code, out_j, err_j = _run(*base, "--json")
+    assert code == 0
+    assert err_j == "SCHEMA DIFF: Non-Breaking\n"
+    assert out_j.endswith("\n")
+    data = json.loads(out_j)
+    assert data["kind"] == "Non-Breaking"
+    assert data["results"] == []
+    assert data["compatible"] is True
+
+    json_path = tmp_path / "diff.json"
+    code, out_jf, err_jf = _run(*base, "--json", "-o", str(json_path))
+    assert code == 0
+    assert out_jf == ""
+    assert err_jf == "SCHEMA DIFF: Non-Breaking\n"
+    assert json.loads(json_path.read_text(encoding="utf-8")) == data
+    assert json_path.read_text(encoding="utf-8") == out_j.rstrip("\n")
+
+
 def test_schema_diff_format_avro_success_path(capsys):
     """README:44 documents ``--format avro|json`` as the schema *language*
     axis (not the output format): a successful ``--format avro`` run must exit
