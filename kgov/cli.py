@@ -425,7 +425,7 @@ def cmd_topics(args) -> int:
 
 def cmd_registry(args) -> int:
     registry_url = getattr(args, "registry_url", None)
-    if not isinstance(registry_url, str) or not registry_url.startswith("http"):
+    if not isinstance(registry_url, str) or not registry_url.startswith(("http://", "https://")):
         raise CliError("registry requires --registry-url <http://host:port>")
 
     try:
