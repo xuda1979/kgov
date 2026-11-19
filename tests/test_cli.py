@@ -2946,6 +2946,68 @@ def test_topics_cli_output_file_success_writes_payload(monkeypatch, tmp_path) ->
     assert file_text == out.rstrip("\n")
 
 
+def test_topics_timeout_axis_at_main_boundary(monkeypatch) -> None:
+    """README:115: ``kgov topics --bootstrap localhost:9092 [-o topics.json]``
+    documents the topics command, whose --timeout flag the parser declares as
+    type=float (cli.py:633). The registry route pins its own --timeout ladder
+    (test_registry_cli_junk_timeout_exit_3: non-float -> exit 2 usage error,
+    float-parseable junk -> clean exit 3); the topics --timeout axis was only
+    ever pinned on the direct handler (test_cmd_topics_tolerates_junk_bootstrap
+    and _options, ~2748), never crossing the main() boundary. This pin does:
+    a valid float exits 0 and is wired through to the wire call unchanged, a
+    falsy 0 is coerced to the documented default (never a false exit-3 failure),
+    float-parseable junk (-1/nan/inf) fails closed via broker._require_timeout
+    with a clean exit-3 CliError, and a non-float string is an argparse usage
+    error (exit 2, empty stdout)."""
+    import kgov.broker
+    from kgov.broker import _require_timeout
+
+    calls: dict = {}
+
+    def fake_list_topics(bootstrap, timeout=10.0):
+        # Mirror real list_topics: reject junk timeouts first, record the value
+        # that reached the wire, and return a stable topic list.
+        _require_timeout(timeout)
+        calls["timeout"] = timeout
+        return ["payments"]
+
+    monkeypatch.setattr("kgov.broker.list_topics", fake_list_topics)
+
+    # valid float: exit 0, the value reaches the wire unchanged
+    code, out, err = _run("topics", "--bootstrap", "127.0.0.1:9092",
+                          "--timeout", "7.5")
+    assert code == 0
+    assert calls["timeout"] == 7.5
+    assert json.loads(out)["topics"] == ["payments"]
+
+    # falsy 0 coerces to the default 10.0 (cmd_topics passes `or 10.0`), so a
+    # zero timeout never turns into a false exit-3 failure
+    calls.clear()
+    code, out, err = _run("topics", "--bootstrap", "127.0.0.1:9092",
+                          "--timeout", "0")
+    assert code == 0
+    assert calls["timeout"] == 10.0
+
+    # float-parseable junk: _require_timeout rejects -> clean exit 3, never a
+    # hang or a raw exception traceback
+    for junk in ("-1", "nan", "inf"):
+        code, out, err = _run("topics", "--bootstrap", "127.0.0.1:9092",
+                              "--timeout", junk)
+        assert code == 3, junk
+        assert "failed to list topics from" in err, junk
+        assert "timeout must be a positive number" in err, junk
+        assert "Traceback" not in err, junk
+
+    # non-float string: parser type=float usage error -> exit 2, empty stdout
+    for junk in ("abc", "3.5.6"):
+        code, out, err = _run("topics", "--bootstrap", "127.0.0.1:9092",
+                              "--timeout", junk)
+        assert code == 2, junk
+        assert out == ""
+        assert "error:" in err
+        assert "Traceback" not in err
+
+
 def test_load_schema_text_tolerates_junk_refs_fail_closed():
     """_load_schema_text (the schema-diff before/after ref loader) is the one
     public cli helper Fixes 22-28 never probed. Every junk ref class must fold
