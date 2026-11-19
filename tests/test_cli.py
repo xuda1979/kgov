@@ -791,6 +791,32 @@ def test_report_csv_full_row_values(tmp_path):
     ]
 
 
+def test_report_cli_output_file_success_writes_json(tmp_path) -> None:
+    """README.md:127: ``kgov report --topics topics.json [--registry ...]
+    [--groups ...] [--format json|csv] [-o report.json|report.csv]`` documents
+    the -o flag writing report output to a file. test_report_rules_messages_
+    accumulate_violations already writes a default-format JSON file and the .csv
+    legs are pinned by test_report_csv_full_row_values, but nothing pins the
+    explicit ``--format json`` route to a file and checks it against the stdout
+    render. This test does: exit 0 with the same rendered JSON (top-level
+    ``{"topics", "total_topics", "generated_at"}``) in the file as the stdout
+    route emits."""
+    base = ["report", "--topics", str(FIXTURES / "topics" / "topics.json"),
+            "--registry", str(FIXTURES / "registry" / "registry.json"),
+            "--groups", str(FIXTURES / "subject_groups" / "consumer_groups.json"),
+            "--format", "json"]
+    out_path = tmp_path / "report.json"
+    code, _, _ = _run(*base, "-o", str(out_path))
+    assert code == 0
+    data = json.loads(out_path.read_text(encoding="utf-8"))
+    assert set(data) == {"topics", "total_topics", "generated_at"}
+    assert data["total_topics"] == 3
+    # file content identical to what the --format json stdout route renders
+    code, out, _ = _run(*base)
+    assert code == 0
+    assert json.loads(out) == data
+
+
 def test_report_requires_topics(capsys):
     # argparse fails on the missing required flag before our handler runs
     code = main(["report"])
