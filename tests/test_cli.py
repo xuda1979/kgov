@@ -2799,6 +2799,39 @@ def test_topics_failure_ladder_at_main_boundary(monkeypatch) -> None:
         assert "Traceback" not in err, name
 
 
+def test_check_broker_scan_junk_read_fails_closed(monkeypatch) -> None:
+    """check --broker/--topic must fail closed when the wire read returns a
+    non-list container or non-message entries: the validation comprehension at
+    cli.py:307-320 accesses m.topic/m.partition/... on each entry, and any
+    AttributeError/TypeError is wrapped (cli.py:321-327) as the clean CliError
+    "broker scan returned invalid messages: {exc}" — a junk read must never
+    pass the gate with zero violations. test_check_broker_scan_failure_exit_3
+    pins the transport-failure sibling ("broker scan failed", cli.py:305) at
+    the main() boundary with the same stub pattern (read_topic
+    monkeypatched + AvroRecordDecoder stubbed); this ladder pins the
+    junk-read branch across three container shapes. Each leg exits 3 with
+    out=="" and no Traceback."""
+    rules = FIXTURES / "rules" / "rules_scale.yaml"
+
+    monkeypatch.setattr("kgov.broker.AvroRecordDecoder", lambda *a, **k: None)
+
+    for name, junk in [
+        ("dict entry", lambda broker, topic, value_decoder=None: {
+            "topic": "payments"}),
+        ("None + string entries", lambda broker, topic, value_decoder=None: [
+            None, "junk"]),
+        ("raw string", lambda broker, topic, value_decoder=None: "not-a-list"),
+    ]:
+        monkeypatch.setattr("kgov.broker.read_topic", junk)
+        code, out, err = _run("check", "--config", str(rules),
+                              "--broker", "127.0.0.1:9",
+                              "--topic", "payments", "--quiet")
+        assert code == 3, name
+        assert out == "", name
+        assert "broker scan returned invalid messages" in err, (name, err)
+        assert "Traceback" not in err, name
+
+
 def test_export_unknown_type_fails_closed():
     """export --type accepts only schema-diff|check|violations|report
     (cli.py:656). An unknown type must fail closed on both boundaries: at the
