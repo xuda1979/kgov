@@ -2370,6 +2370,63 @@ def test_export_max_violations_feed_ladder_at_main_boundary():
     assert data["ok"] is False
 
 
+def test_export_check_junk_fixture_ladder_at_main_boundary(tmp_path):
+    """The export parser routes check/violations into cmd_check (cli.py:570)
+    and schema-diff into cmd_schema_diff, so junk fixtures must fail closed
+    with the same clean errors as the direct routes (pinned at
+    test_check_non_utf8_rules_exit_3:832, test_check_scalar_messages_fixture_
+    exit_3:821, test_check_non_numeric_range_bound_exit_3:844, test_check_non_
+    utf8_messages_exit_3:857, test_schema_diff_non_utf8_exit_3:867) — never a
+    raw UnicodeDecodeError/TypeError/ValueError traceback escaping main()."""
+    rules = str(FIXTURES / "rules" / "rules_scale.yaml")
+    msgs = str(FIXTURES / "messages" / "payments_messages.json")
+
+    bad_rules = tmp_path / "rules.yaml"
+    bad_rules.write_bytes(b"{topic: \xff\xfe}")
+    scalar_msgs = tmp_path / "msgs.json"
+    scalar_msgs.write_text("null", encoding="utf-8")
+    bad_range = tmp_path / "range.yaml"
+    bad_range.write_text(
+        "version: 1\ntopic: payments\nfields:\n"
+        "  amount_cents:\n    type: integer\n"
+        "    range: {minimum: abc}\n", encoding="utf-8")
+    bad_msgs = tmp_path / "badmsgs.json"
+    bad_msgs.write_bytes(b'{"messages": \xff\xfe[]}')
+    bad_schema = tmp_path / "bad.json"
+    bad_schema.write_bytes(b'\xff\xfe{"type": "record"}')
+    after = str(FIXTURES / "schemas" / "v1.json")
+
+    # export check route: every junk fixture exits 3 with its designed message
+    for name, argv, want in [
+        ("non-utf8 rules", ["export", "--type", "check", "--format", "json",
+                            "--config", str(bad_rules), "--messages", msgs],
+         "bad rules config"),
+        ("scalar messages", ["export", "--type", "check", "--format", "json",
+                             "--config", rules, "--messages", str(scalar_msgs)],
+         "bad message fixture"),
+        ("non-numeric range bound", ["export", "--type", "check", "--format",
+                                     "json", "--config", str(bad_range),
+                                     "--messages", msgs],
+         "bad rules config"),
+        ("non-utf8 messages", ["export", "--type", "check", "--format", "json",
+                               "--config", rules, "--messages", str(bad_msgs)],
+         "bad message fixture"),
+        ("violations alias non-utf8 rules", ["export", "--type", "violations",
+                                             "--format", "json", "--config",
+                                             str(bad_rules), "--messages", msgs],
+         "bad rules config"),
+        ("schema-diff non-utf8 before", ["export", "--type", "schema-diff",
+                                         "--format", "json", "--before",
+                                         str(bad_schema), "--after", after],
+         "not valid UTF-8"),
+    ]:
+        code, out, err = _run(*argv)
+        assert code == 3, name
+        assert out == "", name
+        assert want in err, (name, err)
+        assert "Traceback" not in err, name
+
+
 def test_export_unknown_type_fails_closed():
     """export --type accepts only schema-diff|check|violations|report
     (cli.py:656). An unknown type must fail closed on both boundaries: at the
