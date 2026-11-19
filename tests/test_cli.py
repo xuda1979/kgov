@@ -237,6 +237,50 @@ def test_schema_diff_output_json_extension_shortcut(tmp_path):
     assert body == out.rstrip("\n")
 
 
+def test_schema_diff_output_mode_precedence_json_wins(tmp_path):
+    """README:45 documents ``[-o diff.md|diff.json]`` and README:56 documents
+    ``--json``/``.json`` 后缀 or Markdown output as *alternative* output-mode
+    signals; when conflicting signals are combined the resolution is
+    deterministic and JSON wins: cli.py:237-238 evaluates ``want_json`` (the
+    ``--json`` flag OR a ``.json`` extension) before ``want_md`` (the
+    ``--markdown`` flag OR a ``.md`` extension), so every conflicting combo
+    renders JSON while markdown is only ever chosen when NO json signal is
+    present. Pins that precedence so a future reorder of the two branches
+    cannot silently flip which signal wins."""
+    before = str(FIXTURES / "schemas" / "v1.json")
+    after = str(FIXTURES / "schemas" / "v2.json")
+    base = ["schema-diff", "--before", before, "--after", after,
+            "--subject", "payments-value"]
+
+    # --markdown -o diff.json: the .json extension wins over the md flag
+    out1 = tmp_path / "flag_vs_ext.json"
+    code, out, err = _run(*base, "--markdown", "-o", str(out1))
+    assert code == 0
+    assert out == ""
+    assert err == "SCHEMA DIFF: Additive\n"
+    body1 = out1.read_text(encoding="utf-8")
+    assert body1.lstrip().startswith("{")
+    assert json.loads(body1)["kind"] == "Additive"
+
+    # --json -o diff.md: the json flag wins over the md extension
+    out2 = tmp_path / "flag_vs_ext.md"
+    code, out, err = _run(*base, "--json", "-o", str(out2))
+    assert code == 0
+    assert out == ""
+    body2 = out2.read_text(encoding="utf-8")
+    assert body2.lstrip().startswith("{")
+    assert json.loads(body2) == json.loads(body1)
+    assert not body2.endswith("\n")  # file write carries no stdout newline
+
+    # --markdown --json on stdout: the json flag wins over the md flag
+    code, out, err = _run(*base, "--markdown", "--json")
+    assert code == 0
+    assert out.lstrip().startswith("{")
+    assert json.loads(out)["kind"] == "Additive"
+    assert err == "SCHEMA DIFF: Additive\n"
+    assert out.endswith("\n")
+
+
 def test_schema_diff_json_output_file_vs_stdout(tmp_path):
     """README:56 documents ``--json`` 输出 JSON; README:45 documents
     ``[-o diff.md|diff.json]``. The direct schema-diff route must write the
