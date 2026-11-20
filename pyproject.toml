@@ -1,17 +1,37 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "kgov"
 version = "0.1.0"
 description = "Kafka topic governance assistant: schema diff + dirty-data rules"
+readme = "README.md"
 requires-python = ">=3.11"
+license = "AGPL-3.0-only"
+authors = [
+    {name = "Xu Da (许达)"},
+]
+keywords = ["kafka", "schema-registry", "governance", "avro", "json-schema", "data-quality"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Quality Assurance",
+]
 dependencies = [
     "avro>=1.11",
     "jsonschema>=4.18",
     "PyYAML>=6.0",
 ]
+
+[project.urls]
+Source = "https://github.com/xuda1979"
 
 [project.optional-dependencies]
 broker = ["confluent-kafka>=2.5"]
